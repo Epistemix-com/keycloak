@@ -35,6 +35,7 @@ import org.keycloak.protocol.oidc.endpoints.TokenEndpoint;
 import org.keycloak.protocol.oidc.grants.ciba.CibaGrantType;
 import org.keycloak.protocol.oidc.grants.device.endpoints.DeviceEndpoint;
 import org.keycloak.protocol.oidc.par.endpoints.ParEndpoint;
+import org.keycloak.protocol.oidc.representations.MTLSEndpointAliases;
 import org.keycloak.protocol.oidc.representations.OIDCConfigurationRepresentation;
 import org.keycloak.protocol.oidc.utils.OIDCResponseType;
 import org.keycloak.provider.Provider;
@@ -45,6 +46,7 @@ import org.keycloak.services.clientregistration.ClientRegistrationService;
 import org.keycloak.services.clientregistration.oidc.OIDCClientRegistrationProviderFactory;
 import org.keycloak.services.resources.RealmsResource;
 import org.keycloak.urls.UrlType;
+import org.keycloak.util.JsonSerialization;
 import org.keycloak.wellknown.WellKnownProvider;
 
 import javax.ws.rs.core.UriBuilder;
@@ -87,12 +89,18 @@ public class OIDCWellKnownProvider implements WellKnownProvider {
     // KEYCLOAK-7451 OAuth Authorization Server Metadata for Proof Key for Code Exchange
     public static final List<String> DEFAULT_CODE_CHALLENGE_METHODS_SUPPORTED = list(OAuth2Constants.PKCE_METHOD_PLAIN, OAuth2Constants.PKCE_METHOD_S256);
 
-    public static final List<String> DEFAULT_BACKCHANNEL_TOKEN_DELIVERY_MODES_SUPPORTED= list(CibaConfig.DEFAULT_CIBA_POLICY_TOKEN_DELIVERY_MODE);
-
-    private KeycloakSession session;
+    private final KeycloakSession session;
+    private final Map<String, Object> openidConfigOverride;
+    private final boolean includeClientScopes;
 
     public OIDCWellKnownProvider(KeycloakSession session) {
+        this(session, null, true);
+    }
+
+    public OIDCWellKnownProvider(KeycloakSession session, Map<String, Object> openidConfigOverride, boolean includeClientScopes) {
         this.session = session;
+        this.openidConfigOverride = openidConfigOverride;
+        this.includeClientScopes = includeClientScopes;
     }
 
     @Override
@@ -151,12 +159,15 @@ public class OIDCWellKnownProvider implements WellKnownProvider {
         config.setClaimTypesSupported(DEFAULT_CLAIM_TYPES_SUPPORTED);
         config.setClaimsParameterSupported(true);
 
-        List<String> scopeNames = realm.getClientScopesStream()
-                .filter(clientScope -> Objects.equals(OIDCLoginProtocol.LOGIN_PROTOCOL, clientScope.getProtocol()))
-                .map(ClientScopeModel::getName)
-                .collect(Collectors.toList());
-        scopeNames.add(0, OAuth2Constants.SCOPE_OPENID);
-        config.setScopesSupported(scopeNames);
+        // Include client scopes can be disabled in the environments with thousands of client scopes to avoid potentially expensive iteration over client scopes
+        if (includeClientScopes) {
+            List<String> scopeNames = realm.getClientScopesStream()
+                    .filter(clientScope -> Objects.equals(OIDCLoginProtocol.LOGIN_PROTOCOL, clientScope.getProtocol()))
+                    .map(ClientScopeModel::getName)
+                    .collect(Collectors.toList());
+            scopeNames.add(0, OAuth2Constants.SCOPE_OPENID);
+            config.setScopesSupported(scopeNames);
+        }
 
         config.setRequestParameterSupported(true);
         config.setRequestUriParameterSupported(true);
@@ -181,13 +192,17 @@ public class OIDCWellKnownProvider implements WellKnownProvider {
         config.setBackchannelLogoutSupported(true);
         config.setBackchannelLogoutSessionSupported(true);
 
-        config.setBackchannelTokenDeliveryModesSupported(DEFAULT_BACKCHANNEL_TOKEN_DELIVERY_MODES_SUPPORTED);
+        config.setBackchannelTokenDeliveryModesSupported(CibaConfig.CIBA_SUPPORTED_MODES);
         config.setBackchannelAuthenticationEndpoint(CibaGrantType.authorizationUrl(backendUriInfo.getBaseUriBuilder()).build(realm.getName()).toString());
         config.setBackchannelAuthenticationRequestSigningAlgValuesSupported(getSupportedBackchannelAuthenticationRequestSigningAlgorithms());
 
         config.setPushedAuthorizationRequestEndpoint(ParEndpoint.parUrl(backendUriInfo.getBaseUriBuilder()).build(realm.getName()).toString());
         config.setRequirePushedAuthorizationRequests(Boolean.FALSE);
 
+        MTLSEndpointAliases mtlsEndpointAliases = getMtlsEndpointAliases(config);
+        config.setMtlsEndpointAliases(mtlsEndpointAliases);
+
+        config = checkConfigOverride(config);
         return config;
     }
 
@@ -252,5 +267,30 @@ public class OIDCWellKnownProvider implements WellKnownProvider {
 
     private List<String> getSupportedEncryptionEnc(boolean includeNone) {
         return getSupportedAlgorithms(ContentEncryptionProvider.class, includeNone);
+    }
+
+    // Use protected method to make it easier to override in custom provider if different URLs are requested to be used as mtls_endpoint_aliases
+    protected MTLSEndpointAliases getMtlsEndpointAliases(OIDCConfigurationRepresentation config) {
+        MTLSEndpointAliases mtls_endpoints = new MTLSEndpointAliases();
+        mtls_endpoints.setTokenEndpoint(config.getTokenEndpoint());
+        mtls_endpoints.setRevocationEndpoint(config.getRevocationEndpoint());
+        mtls_endpoints.setIntrospectionEndpoint(config.getIntrospectionEndpoint());
+        mtls_endpoints.setDeviceAuthorizationEndpoint(config.getDeviceAuthorizationEndpoint());
+        mtls_endpoints.setRegistrationEndpoint(config.getRegistrationEndpoint());
+        mtls_endpoints.setUserInfoEndpoint(config.getUserinfoEndpoint());
+        mtls_endpoints.setBackchannelAuthenticationEndpoint(config.getBackchannelAuthenticationEndpoint());
+        mtls_endpoints.setPushedAuthorizationRequestEndpoint(config.getPushedAuthorizationRequestEndpoint());
+        return mtls_endpoints;
+    }
+
+    private OIDCConfigurationRepresentation checkConfigOverride(OIDCConfigurationRepresentation config) {
+        if (openidConfigOverride != null) {
+            Map<String, Object> asMap = JsonSerialization.mapper.convertValue(config, Map.class);
+            // Override configuration
+            asMap.putAll(openidConfigOverride);
+            return JsonSerialization.mapper.convertValue(asMap, OIDCConfigurationRepresentation.class);
+        } else {
+            return config;
+        }
     }
 }

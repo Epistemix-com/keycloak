@@ -29,10 +29,11 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.keycloak.models.ProtocolMapperModel;
 import org.keycloak.models.map.common.AbstractEntity;
+import org.keycloak.models.map.common.UpdatableEntity;
 
-public class MapClientScopeEntity<K> implements AbstractEntity<K> {
+public class MapClientScopeEntity implements AbstractEntity, UpdatableEntity {
 
-    private final K id;
+    private final String id;
     private final String realmId;
 
     private String name;
@@ -53,8 +54,7 @@ public class MapClientScopeEntity<K> implements AbstractEntity<K> {
         this.realmId = null;
     }
 
-    public MapClientScopeEntity(K id, String realmId) {
-        Objects.requireNonNull(id, "id");
+    public MapClientScopeEntity(String id, String realmId) {
         Objects.requireNonNull(realmId, "realmId");
 
         this.id = id;
@@ -62,7 +62,7 @@ public class MapClientScopeEntity<K> implements AbstractEntity<K> {
     }
 
     @Override
-    public K getId() {
+    public String getId() {
         return this.id;
     }
 

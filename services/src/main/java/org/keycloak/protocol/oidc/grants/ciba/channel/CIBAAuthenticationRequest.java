@@ -19,11 +19,7 @@ package org.keycloak.protocol.oidc.grants.ciba.channel;
 
 import javax.crypto.SecretKey;
 import java.io.UnsupportedEncodingException;
-import java.util.HashMap;
-import java.util.Map;
 
-import com.fasterxml.jackson.annotation.JsonAnyGetter;
-import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import org.keycloak.OAuth2Constants;
 import org.keycloak.crypto.Algorithm;
@@ -94,6 +90,9 @@ public class CIBAAuthenticationRequest extends JsonWebToken {
 
     @JsonIgnore
     protected ClientModel client;
+
+    @JsonIgnore
+    protected String clientNotificationToken;
 
     @JsonIgnore
     protected UserModel user;
@@ -173,6 +172,14 @@ public class CIBAAuthenticationRequest extends JsonWebToken {
 
     public ClientModel getClient() {
         return client;
+    }
+
+    public String getClientNotificationToken() {
+        return clientNotificationToken;
+    }
+
+    public void setClientNotificationToken(String clientNotificationToken) {
+        this.clientNotificationToken = clientNotificationToken;
     }
 
     public void setUser(UserModel user) {

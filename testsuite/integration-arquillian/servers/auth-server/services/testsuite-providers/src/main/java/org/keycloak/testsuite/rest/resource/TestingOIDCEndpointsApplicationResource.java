@@ -25,6 +25,7 @@ import javax.ws.rs.BadRequestException;
 import javax.ws.rs.Consumes;
 
 import org.keycloak.OAuth2Constants;
+import org.keycloak.OAuthErrorException;
 import org.keycloak.common.util.Base64;
 import org.keycloak.common.util.Base64Url;
 import org.keycloak.common.util.KeyUtils;
@@ -51,8 +52,10 @@ import org.keycloak.protocol.oidc.grants.ciba.CibaGrantType;
 import org.keycloak.protocol.oidc.grants.ciba.channel.AuthenticationChannelRequest;
 import org.keycloak.protocol.oidc.grants.ciba.channel.HttpAuthenticationChannelProvider;
 import org.keycloak.protocol.oidc.OIDCLoginProtocol;
+import org.keycloak.protocol.oidc.grants.ciba.endpoints.ClientNotificationEndpointRequest;
 import org.keycloak.representations.AccessToken;
 import org.keycloak.representations.JsonWebToken;
+import org.keycloak.services.ErrorResponseException;
 import org.keycloak.services.managers.AppAuthManager;
 import org.keycloak.testsuite.rest.TestApplicationResourceProviderFactory;
 import org.keycloak.testsuite.rest.representation.TestAuthenticationChannelRequest;
@@ -99,19 +102,22 @@ public class TestingOIDCEndpointsApplicationResource {
 
     private final TestApplicationResourceProviderFactory.OIDCClientData clientData;
     private final ConcurrentMap<String, TestAuthenticationChannelRequest> authenticationChannelRequests;
+    private final ConcurrentMap<String, ClientNotificationEndpointRequest> cibaClientNotifications;
 
 
     public TestingOIDCEndpointsApplicationResource(TestApplicationResourceProviderFactory.OIDCClientData oidcClientData,
-            ConcurrentMap<String, TestAuthenticationChannelRequest> authenticationChannelRequests) {
+            ConcurrentMap<String, TestAuthenticationChannelRequest> authenticationChannelRequests, ConcurrentMap<String, ClientNotificationEndpointRequest> cibaClientNotifications) {
         this.clientData = oidcClientData;
         this.authenticationChannelRequests = authenticationChannelRequests;
+        this.cibaClientNotifications = cibaClientNotifications;
     }
 
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     @Path("/generate-keys")
     @NoCache
-    public Map<String, String> generateKeys(@QueryParam("jwaAlgorithm") String jwaAlgorithm) {
+    public Map<String, String> generateKeys(@QueryParam("jwaAlgorithm") String jwaAlgorithm,
+            @QueryParam("advertiseJWKAlgorithm") Boolean advertiseJWKAlgorithm) {
         try {
             KeyPair keyPair = null;
             KeyUse keyUse = KeyUse.SIG;
@@ -154,7 +160,11 @@ public class TestingOIDCEndpointsApplicationResource {
 
             clientData.setKeyPair(keyPair);
             clientData.setKeyType(keyType);
-            clientData.setKeyAlgorithm(jwaAlgorithm);
+            if (advertiseJWKAlgorithm == null || Boolean.TRUE.equals(advertiseJWKAlgorithm)) {
+                clientData.setKeyAlgorithm(jwaAlgorithm);
+            } else {
+                clientData.setKeyAlgorithm(null);
+            }
             clientData.setKeyUse(keyUse);
         } catch (Exception e) {
             throw new BadRequestException("Error generating signing keypair", e);
@@ -209,7 +219,7 @@ public class TestingOIDCEndpointsApplicationResource {
         String keyType = clientData.getKeyType();
         KeyUse keyUse = clientData.getKeyUse();
 
-        if (keyPair == null || !isSupportedAlgorithm(keyAlgorithm)) {
+        if (keyPair == null) {
             keySet.setKeys(new JWK[] {});
         } else if (KeyType.RSA.equals(keyType)) {
             keySet.setKeys(new JWK[] { JWKBuilder.create().algorithm(keyAlgorithm).rsa(keyPair.getPublic(), keyUse) });
@@ -230,12 +240,18 @@ public class TestingOIDCEndpointsApplicationResource {
     @NoCache
     public void setOIDCRequest(@QueryParam("realmName") String realmName, @QueryParam("clientId") String clientId,
                                @QueryParam("redirectUri") String redirectUri, @QueryParam("maxAge") String maxAge,
+                                @QueryParam("state") String state,
                                @QueryParam("jwaAlgorithm") String jwaAlgorithm) {
 
         Map<String, Object> oidcRequest = new HashMap<>();
         oidcRequest.put(OIDCLoginProtocol.CLIENT_ID_PARAM, clientId);
         oidcRequest.put(OIDCLoginProtocol.RESPONSE_TYPE_PARAM, OAuth2Constants.CODE);
         oidcRequest.put(OIDCLoginProtocol.REDIRECT_URI_PARAM, redirectUri);
+
+        if (state != null) {
+            oidcRequest.put(OIDCLoginProtocol.STATE_PARAM, state);
+        }
+
         if (maxAge != null) {
             oidcRequest.put(OIDCLoginProtocol.MAX_AGE_PARAM, Integer.parseInt(maxAge));
         }
@@ -683,4 +699,33 @@ public class TestingOIDCEndpointsApplicationResource {
     }
 
     private static final String ChannelRequestDummyKey = "channel_request_dummy_key";
+
+
+    @POST
+    @Path("/push-ciba-client-notification")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    @NoCache
+    public Response cibaClientNotificationEndpoint(@Context HttpHeaders headers, ClientNotificationEndpointRequest request) {
+        String clientNotificationToken = AppAuthManager.extractAuthorizationHeaderToken(headers);
+        ClientNotificationEndpointRequest existing = cibaClientNotifications.putIfAbsent(clientNotificationToken, request);
+        if (existing != null) {
+            throw new ErrorResponseException(OAuthErrorException.INVALID_REQUEST, "There is already entry for clientNotification " + clientNotificationToken + ". Make sure to cleanup after previous tests.",
+                    Response.Status.BAD_REQUEST);
+        }
+        return Response.noContent().build();
+    }
+
+
+    @GET
+    @Path("/get-pushed-ciba-client-notification")
+    @Produces(MediaType.APPLICATION_JSON)
+    @NoCache
+    public ClientNotificationEndpointRequest getPushedCibaClientNotification(@QueryParam("clientNotificationToken") String clientNotificationToken) {
+        ClientNotificationEndpointRequest request = cibaClientNotifications.remove(clientNotificationToken);
+        if (request == null) {
+            request = new ClientNotificationEndpointRequest();
+        }
+        return request;
+    }
 }

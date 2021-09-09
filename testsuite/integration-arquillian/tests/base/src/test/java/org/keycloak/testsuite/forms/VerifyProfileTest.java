@@ -36,6 +36,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.keycloak.OAuth2Constants;
 import org.keycloak.admin.client.resource.RealmResource;
+import org.keycloak.common.Profile;
 import org.keycloak.events.Details;
 import org.keycloak.events.EventType;
 import org.keycloak.models.UserModel;
@@ -45,6 +46,9 @@ import org.keycloak.representations.idm.RequiredActionProviderRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
 import org.keycloak.testsuite.AbstractTestRealmKeycloakTest;
 import org.keycloak.testsuite.AssertEvents;
+import org.keycloak.testsuite.arquillian.annotation.AuthServerContainerExclude;
+import org.keycloak.testsuite.arquillian.annotation.EnableFeature;
+import org.keycloak.testsuite.arquillian.annotation.SetDefaultProvider;
 import org.keycloak.testsuite.pages.AppPage;
 import org.keycloak.testsuite.pages.AppPage.RequestType;
 import org.keycloak.testsuite.pages.LoginPage;
@@ -54,11 +58,14 @@ import org.keycloak.testsuite.util.KeycloakModelUtils;
 import org.keycloak.testsuite.util.OAuthClient;
 import org.keycloak.testsuite.util.RealmBuilder;
 import org.keycloak.testsuite.util.UserBuilder;
+import org.keycloak.userprofile.UserProfileSpi;
 import org.openqa.selenium.By;
 
 /**
  * @author Vlastimil Elias <velias@redhat.com>
  */
+@EnableFeature(value = Profile.Feature.DECLARATIVE_USER_PROFILE)
+@AuthServerContainerExclude(AuthServerContainerExclude.AuthServer.REMOTE)
 public class VerifyProfileTest extends AbstractTestRealmKeycloakTest {
     
     public static final String SCOPE_DEPARTMENT = "department";
@@ -180,6 +187,72 @@ public class VerifyProfileTest extends AbstractTestRealmKeycloakTest {
         Assert.assertEquals("Department",verifyProfilePage.getLabelForField("department"));
     }
     
+    @Test
+    public void testAttributeGrouping() {
+
+        setUserProfileConfiguration(CONFIGURATION_FOR_USER_EDIT);
+        updateUser(user5Id, "ExistingFirst", "ExistingLast", null);
+
+        setUserProfileConfiguration("{\"attributes\": ["
+                + "{\"name\": \"lastName\"," + VerifyProfileTest.PERMISSIONS_ALL + "},"
+                + "{\"name\": \"username\", " + VerifyProfileTest.PERMISSIONS_ALL + "},"
+                + "{\"name\": \"firstName\"," + VerifyProfileTest.PERMISSIONS_ALL + ", \"required\": {}},"
+                + "{\"name\": \"department\", " + VerifyProfileTest.PERMISSIONS_ALL + ", \"required\":{}, \"group\": \"company\"},"
+                + "{\"name\": \"email\", " + VerifyProfileTest.PERMISSIONS_ALL + ", \"group\": \"contact\"}"
+                + "], \"groups\": ["
+                + "{\"name\": \"company\", \"displayDescription\": \"Company field desc\" },"
+                + "{\"name\": \"contact\" }"
+                + "]}");
+
+        loginPage.open();
+        loginPage.login("login-test5", "password");
+
+        verifyProfilePage.assertCurrent();
+        String htmlFormId="kc-update-profile-form";
+        
+        //assert fields and groups location in form
+        Assert.assertTrue(
+                driver.findElement(
+                        By.cssSelector("form#"+htmlFormId+" > div:nth-child(1) > div:nth-child(2) > input#lastName")
+                ).isDisplayed()
+        );
+        Assert.assertTrue(
+                driver.findElement(
+                        By.cssSelector("form#"+htmlFormId+" > div:nth-child(2) > div:nth-child(2) > input#username")
+                ).isDisplayed()
+        );
+        Assert.assertTrue(
+                driver.findElement(
+                        By.cssSelector("form#"+htmlFormId+" > div:nth-child(3) > div:nth-child(2) > input#firstName")
+                ).isDisplayed()
+        );
+        Assert.assertTrue(
+                driver.findElement(
+                        By.cssSelector("form#"+htmlFormId+" > div:nth-child(4) > div:nth-child(1) > label#header-company")
+                ).isDisplayed()
+        );
+        Assert.assertTrue(
+                driver.findElement(
+                        By.cssSelector("form#"+htmlFormId+" > div:nth-child(4) > div:nth-child(2) > label#description-company")
+                ).isDisplayed()
+        );
+        Assert.assertTrue(
+                driver.findElement(
+                        By.cssSelector("form#"+htmlFormId+" > div:nth-child(5) > div:nth-child(2) > input#department")
+                ).isDisplayed()
+        );
+        Assert.assertTrue(
+                driver.findElement(
+                        By.cssSelector("form#"+htmlFormId+" > div:nth-child(6) > div:nth-child(1) > label#header-contact")
+                ).isDisplayed()
+        );
+        Assert.assertTrue(
+                driver.findElement(
+                        By.cssSelector("form#"+htmlFormId+" > div:nth-child(7) > div:nth-child(2) > input#email")
+                ).isDisplayed()
+        );
+    }
+
     @Test
     public void testAttributeGuiOrder() {
 
@@ -788,6 +861,32 @@ public class VerifyProfileTest extends AbstractTestRealmKeycloakTest {
     }
     
     @Test
+    public void testEmailChangeSetsEmailVerified() {
+        setUserProfileConfiguration(CONFIGURATION_FOR_USER_EDIT);
+        updateUser(user5Id, true, "", "ExistingLast");
+
+        setUserProfileConfiguration("{\"attributes\": [" 
+                + "{\"name\": \"firstName\"," + PERMISSIONS_ALL + ", \"required\": {}}," 
+                + "{\"name\": \"lastName\"," + PERMISSIONS_ALL + "}"
+                + "]}");
+
+        loginPage.open();
+        loginPage.login("login-test5", "password");
+
+        verifyProfilePage.assertCurrent();
+
+        //submit OK
+        verifyProfilePage.updateEmail("newemail@test.org","FirstCC", "LastCC");
+        
+        Assert.assertEquals(RequestType.AUTH_RESPONSE, appPage.getRequestType());
+        Assert.assertNotNull(oauth.getCurrentQuery().get(OAuth2Constants.CODE));
+        
+        UserRepresentation user = getUser(user5Id);
+        assertEquals("newemail@test.org", user.getEmail());
+        assertEquals(false, user.isEmailVerified());
+    }
+    
+    @Test
     public void testNoActionIfSuccessfulValidationForCustomAttribute() {
         
         setUserProfileConfiguration(CONFIGURATION_FOR_USER_EDIT);
@@ -814,6 +913,14 @@ public class VerifyProfileTest extends AbstractTestRealmKeycloakTest {
         updateUser(testRealm(), userId, firstName, lastName, department);
     }
     
+    protected void updateUser(String userId, boolean emailVerified, String firstName, String lastName) {
+        UserRepresentation ur = getUser(testRealm(), userId);
+        ur.setFirstName(firstName);
+        ur.setLastName(lastName);
+        ur.setEmailVerified(emailVerified);
+        testRealm().users().get(userId).update(ur);
+    }
+    
     protected void setUserProfileConfiguration(String configuration) {
         setUserProfileConfiguration(testRealm(), configuration);
     }
@@ -824,7 +931,17 @@ public class VerifyProfileTest extends AbstractTestRealmKeycloakTest {
         }
         testRealm.getAttributes().put(REALM_USER_PROFILE_ENABLED, Boolean.TRUE.toString());
     }
-    
+
+    public static void disableDynamicUserProfile(RealmResource realm) {
+        RealmRepresentation realmRep = realm.toRepresentation();
+        if (realmRep.getAttributes() == null) {
+            realmRep.setAttributes(new HashMap<>());
+        }
+        realmRep.getAttributes().put(REALM_USER_PROFILE_ENABLED, Boolean.FALSE.toString());
+        realm.update(realmRep);
+    }
+
+
     public static void setUserProfileConfiguration(RealmResource testRealm, String configuration) {
         Response r = testRealm.users().userProfile().update(configuration);
         if (r.getStatus() != 200) {

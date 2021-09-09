@@ -26,6 +26,7 @@ import org.jboss.logging.Logger;
 import org.keycloak.OAuthErrorException;
 import org.keycloak.authentication.AuthenticationProcessor;
 import org.keycloak.common.Profile;
+import org.keycloak.common.util.Time;
 import org.keycloak.events.Details;
 import org.keycloak.events.Errors;
 import org.keycloak.events.EventBuilder;
@@ -151,6 +152,14 @@ public class CibaGrantType {
             throw new CorsErrorResponseException(cors, OAuthErrorException.INVALID_GRANT, "Invalid Auth Req ID", Response.Status.BAD_REQUEST);
         }
 
+        request.setClient(client);
+        try {
+            session.clientPolicy().triggerOnEvent(new BackchannelTokenRequestContext(request, formParams));
+        } catch (ClientPolicyException cpe) {
+            event.error(cpe.getError());
+            throw new CorsErrorResponseException(cors, OAuthErrorException.INVALID_GRANT, cpe.getErrorDetail(), Response.Status.BAD_REQUEST);
+        }
+
         OAuth2DeviceTokenStoreProvider store = session.getProvider(OAuth2DeviceTokenStoreProvider.class);
         OAuth2DeviceCodeModel deviceCode = store.getByDeviceCode(realm, request.getId());
 
@@ -177,7 +186,7 @@ public class CibaGrantType {
 
         if (deviceCode.isDenied()) {
             logDebug("denied.", request);
-            throw new CorsErrorResponseException(cors, OAuthErrorException.ACCESS_DENIED, "not authorized", Response.Status.FORBIDDEN);
+            throw new CorsErrorResponseException(cors, OAuthErrorException.ACCESS_DENIED, "not authorized", Response.Status.BAD_REQUEST);
         }
 
         // get corresponding Authentication Channel Result entry
@@ -190,13 +199,6 @@ public class CibaGrantType {
         UserModel user = userSession.getUser();
 
         store.removeDeviceCode(realm, request.getId());
-
-        try {
-            session.clientPolicy().triggerOnEvent(new BackchannelTokenRequestContext(request, formParams));
-        } catch (ClientPolicyException cpe) {
-            event.error(cpe.getError());
-            throw new CorsErrorResponseException(cors, OAuthErrorException.INVALID_GRANT, cpe.getErrorDetail(), Response.Status.BAD_REQUEST);
-        }
 
         // Compute client scopes again from scope parameter. Check if user still has them granted
         // (but in code-to-token request, it could just theoretically happen that they are not available)
@@ -211,6 +213,9 @@ public class CibaGrantType {
 
         ClientSessionContext clientSessionCtx = DefaultClientSessionContext
                 .fromClientSessionAndClientScopes(userSession.getAuthenticatedClientSessionByClient(client.getId()), TokenManager.getRequestedClientScopes(scopeParam, client), session);
+
+        int authTime = Time.currentTime();
+        userSession.setNote(AuthenticationManager.AUTH_TIME, String.valueOf(authTime));
 
         return tokenEndpoint.createTokenResponse(user, userSession, clientSessionCtx, scopeParam, true);
 

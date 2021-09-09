@@ -16,10 +16,12 @@
  */
 package org.keycloak.subsystem.adapter.extension;
 
+import org.hamcrest.CoreMatchers;
 import org.jboss.as.controller.PathAddress;
 import org.jboss.as.controller.PathElement;
 import org.jboss.as.controller.descriptions.ModelDescriptionConstants;
 import org.jboss.as.subsystem.test.AbstractSubsystemBaseTest;
+import org.jboss.as.subsystem.test.KernelServices;
 import org.jboss.dmr.ModelNode;
 import org.junit.Assert;
 import org.junit.Test;
@@ -29,6 +31,8 @@ import org.keycloak.representations.adapters.config.AdapterConfig;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.Map;
+
+import static org.hamcrest.MatcherAssert.assertThat;
 
 
 /**
@@ -97,12 +101,12 @@ public class SubsystemParsingTestCase extends AbstractSubsystemBaseTest {
 
     @Override
     protected String getSubsystemXml() throws IOException {
-        return readResource("keycloak-1.1.xml");
+        return readResource("keycloak-1.2.xml");
     }
 
     @Override
     protected String getSubsystemXsdPath() throws Exception {
-        return "schema/wildfly-keycloak_1_1.xsd";
+        return "schema/wildfly-keycloak_1_2.xsd";
     }
 
     @Override
@@ -110,6 +114,20 @@ public class SubsystemParsingTestCase extends AbstractSubsystemBaseTest {
         return new String[]{
                 "/subsystem-templates/keycloak-adapter.xml"
         };
+    }
+
+    /**
+     * Checks if the subsystem is still capable of reading a configuration that uses version 1.1 of the schema.
+     *
+     * @throws Exception if an error occurs while running the test.
+     */
+    @Test
+    public void testSubsystem1_1() throws Exception {
+        KernelServices servicesA = super.createKernelServicesBuilder(createAdditionalInitialization())
+                .setSubsystemXml(readResource("keycloak-1.1.xml")).build();
+        Assert.assertTrue("Subsystem boot failed!", servicesA.isSuccessfulBoot());
+        ModelNode modelA = servicesA.readWholeModel();
+        super.validateModel(modelA);
     }
 
     /**
@@ -145,6 +163,42 @@ public class SubsystemParsingTestCase extends AbstractSubsystemBaseTest {
         Map.Entry<String, String> entry = redirectRewriteRules.entrySet().iterator().next();
         Assert.assertEquals("^/wsmaster/api/(.*)$", entry.getKey());
         Assert.assertEquals("api/$1", entry.getValue());
+    }
+
+    @Test
+    public void testJsonHttpClientAttributes() {
+        KeycloakAdapterConfigService service = KeycloakAdapterConfigService.getInstance();
+
+        // add a secure deployment
+        PathAddress addr = PathAddress.pathAddress(PathElement.pathElement("subsystem", "keycloak"), PathElement.pathElement("secure-deployment", "foo"));
+        ModelNode deploymentOp = new ModelNode();
+        deploymentOp.get(ModelDescriptionConstants.OP_ADDR).set(addr.toModelNode());
+
+        ModelNode deployment = new ModelNode();
+        deployment.get("realm").set("demo");
+        deployment.get("resource").set("customer-portal");
+
+        deployment.get(SharedAttributeDefinitons.SOCKET_TIMEOUT.getName()).set(3000L);
+        deployment.get(SharedAttributeDefinitons.CONNECTION_TIMEOUT.getName()).set(5000L);
+        deployment.get(SharedAttributeDefinitons.CONNECTION_TTL.getName()).set(1000L);
+
+        service.addSecureDeployment(deploymentOp, deployment, false);
+
+        // get the subsystem config as JSON
+        String jsonConfig = service.getJSON("foo");
+
+        // attempt to create an adapter config instance from the subsystem JSON config
+        AdapterConfig config = KeycloakDeploymentBuilder.loadAdapterConfig(new ByteArrayInputStream(jsonConfig.getBytes()));
+        assertThat(config, CoreMatchers.notNullValue());
+
+        assertThat(config.getSocketTimeout(), CoreMatchers.notNullValue());
+        assertThat(config.getSocketTimeout(), CoreMatchers.is(3000L));
+
+        assertThat(config.getConnectionTimeout(), CoreMatchers.notNullValue());
+        assertThat(config.getConnectionTimeout(), CoreMatchers.is(5000L));
+
+        assertThat(config.getConnectionTTL(), CoreMatchers.notNullValue());
+        assertThat(config.getConnectionTTL(), CoreMatchers.is(1000L));
     }
 
     private void addRedirectRewriteRule(PathAddress parent, KeycloakAdapterConfigService service, String key, String value) {

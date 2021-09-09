@@ -1325,8 +1325,8 @@ module.controller('RealmTokenDetailCtrl', function($scope, Realm, realm, $http, 
     $scope.realm.actionTokenGeneratedByAdminLifespan = TimeUnit2.asUnit(realm.actionTokenGeneratedByAdminLifespan);
     $scope.realm.actionTokenGeneratedByUserLifespan = TimeUnit2.asUnit(realm.actionTokenGeneratedByUserLifespan);
     $scope.realm.oauth2DeviceCodeLifespan = TimeUnit2.asUnit(realm.oauth2DeviceCodeLifespan);
-    $scope.requestUriLifespan = TimeUnit2.asUnit(realm.attributes.parRequestUriLifespan);
-    $scope.realm.attributes = realm.attributes
+    $scope.realm.attributes.parRequestUriLifespan = TimeUnit2.asUnit(realm.attributes.parRequestUriLifespan);
+    $scope.realm.attributes = realm.attributes;
 
     var oldCopy = angular.copy($scope.realm);
     $scope.changed = false;
@@ -1335,10 +1335,6 @@ module.controller('RealmTokenDetailCtrl', function($scope, Realm, realm, $http, 
         if (!angular.equals($scope.realm, oldCopy)) {
             $scope.changed = true;
         }
-    }, true);
-    
-    $scope.$watch('requestUriLifespan', function () {
-        $scope.changed = true;
     }, true);
     
     $scope.$watch('actionLifespanId', function () {
@@ -1390,7 +1386,7 @@ module.controller('RealmTokenDetailCtrl', function($scope, Realm, realm, $http, 
         $scope.realm.actionTokenGeneratedByAdminLifespan = $scope.realm.actionTokenGeneratedByAdminLifespan.toSeconds();
         $scope.realm.actionTokenGeneratedByUserLifespan = $scope.realm.actionTokenGeneratedByUserLifespan.toSeconds();
         $scope.realm.oauth2DeviceCodeLifespan = $scope.realm.oauth2DeviceCodeLifespan.toSeconds();
-        $scope.realm.attributes.parRequestUriLifespan = $scope.requestUriLifespan.toSeconds().toString();
+        $scope.realm.attributes.parRequestUriLifespan = $scope.realm.attributes.parRequestUriLifespan.toSeconds();
 
         Realm.update($scope.realm, function () {
             $route.reload();
@@ -1415,23 +1411,38 @@ module.controller('RealmUserProfileCtrl', function($scope, Realm, realm, clientS
     $scope.validatorProviders = serverInfo.componentTypes['org.keycloak.validate.Validator'];
 
     $scope.isShowAttributes = true;
+    $scope.isShowAttributeGroups = false;
+    $scope.isShowJsonEditor = false;
 
     UserProfile.get({realm: realm.realm}, function(config) {
         $scope.config = config;
         $scope.rawConfig = angular.toJson(config, true);
     });
-
+    
     $scope.isShowAttributes = true;
-
+    $scope.isShowAttributeGroups = false;
+    $scope.isShowJsonEditor = false;
+    
     $scope.showAttributes = function() {
         $route.reload();
+        delete $scope.currentAttributeGroup;
+    }
+
+    $scope.showAttributeGroups = function() {
+        $scope.isShowAttributes = false;
+        $scope.isShowAttributeGroups = true;
+        $scope.isShowJsonEditor = false;
+        delete $scope.currentAttribute;
     }
 
     $scope.showJsonEditor = function() {
         $scope.isShowAttributes = false;
+        $scope.isShowAttributeGroups = false;
+        $scope.isShowJsonEditor = true;
         delete $scope.currentAttribute;
+        delete $scope.currentAttributeGroup;
     }
-
+    
     $scope.isRequiredRoles = {
         minimumInputLength: 0,
         delay: 500,
@@ -1516,13 +1527,17 @@ module.controller('RealmUserProfileCtrl', function($scope, Realm, realm, clientS
     };
 
     $scope.attributeSelected = false;
-
-    $scope.showListing = function() {
+    
+    $scope.showAttributeListing = function() {
         return !$scope.attributeSelected && $scope.currentAttribute == null && $scope.isShowAttributes;
     }
 
-    $scope.create = function() {
-        $scope.isCreate = true;
+    $scope.showAttributeGroupListing = function() {
+        return !$scope.attributeGroupSelected && $scope.currentAttributeGroup == null && $scope.isShowAttributeGroups;
+    }
+    
+    $scope.createAttribute = function() {
+        $scope.isCreateAttribute = true;
         $scope.currentAttribute = {
             selector: {
                 scopes: []
@@ -1536,6 +1551,11 @@ module.controller('RealmUserProfileCtrl', function($scope, Realm, realm, clientS
                 edit: []
             }
         };
+    };
+
+    $scope.createAttributeGroup = function() {
+        $scope.isCreateAttributeGroup = true;
+        $scope.currentAttributeGroup = {};
     };
 
 	$scope.isNotUsernameOrEmail = function(attributeName) {
@@ -1555,6 +1575,19 @@ module.controller('RealmUserProfileCtrl', function($scope, Realm, realm, clientS
 		$scope.save();
 	}
 
+    $scope.groupOrderUp = function(index) {
+        $scope.moveAttributeGroup(index, index - 1);
+    };
+
+    $scope.groupOrderDown = function(index) {
+        $scope.moveAttributeGroup(index, index + 1);
+    };
+
+    $scope.moveAttributeGroup = function(old_index, new_index){
+        $scope.config.groups.splice(new_index, 0, $scope.config.groups.splice(old_index, 1)[0]);
+        $scope.save(false);
+    }
+
     $scope.removeAttribute = function(attribute) {
         Dialog.confirmDelete(attribute.name, 'attribute', function() {
             let newAttributes = [];
@@ -1570,7 +1603,22 @@ module.controller('RealmUserProfileCtrl', function($scope, Realm, realm, clientS
         });
     };
 
-    $scope.addAnnotation = function() {
+    $scope.removeAttributeGroup = function(attributeGroup) {
+        Dialog.confirmDelete(attributeGroup.name, 'group', function() {
+            let newGroups = [];
+
+            for (var v of $scope.config.groups) {
+                if (v != attributeGroup) {
+                    newGroups.push(v);
+                }
+            }
+
+            $scope.config.groups = newGroups;
+            $scope.save();
+        });
+    };
+
+    $scope.addAttributeAnnotation = function() {
         if (!$scope.currentAttribute.annotations) {
             $scope.currentAttribute.annotations = {};
         }
@@ -1578,11 +1626,23 @@ module.controller('RealmUserProfileCtrl', function($scope, Realm, realm, clientS
         delete $scope.newAnnotation;
     }
 
-    $scope.removeAnnotation = function(key) {
+    $scope.removeAttributeAnnotation = function(key) {
         delete $scope.currentAttribute.annotations[key];
     }
 
-    $scope.edit = function(attribute) {
+    $scope.addAttributeGroupAnnotation = function() {
+        if (!$scope.currentAttributeGroup.annotations) {
+            $scope.currentAttributeGroup.annotations = {};
+        }
+        $scope.currentAttributeGroup.annotations[$scope.newAttributeGroupAnnotation.key] = $scope.newAttributeGroupAnnotation.value;
+        delete $scope.newGroupAnnotation;
+    }
+
+    $scope.removeAttributeGroupAnnotation = function(key) {
+        delete $scope.currentAttributeGroup.annotations[key];
+    }
+
+    $scope.editAttribute = function(attribute) {
         if (attribute.permissions == null) {
             attribute.permissions = {
                 view: [],
@@ -1628,6 +1688,20 @@ module.controller('RealmUserProfileCtrl', function($scope, Realm, realm, clientS
         $scope.attributeSelected = true;
     };
 
+    $scope.editAttributeGroup = function(attributeGroup) {
+        $scope.currentAttributeGroup = attributeGroup;
+        $scope.attributeGroupSelected = true;
+    };
+
+    $scope.groupIsReferencedInAnyAttribute = function(group) {
+        for (var currentAttribute of $scope.config.attributes) {
+            if (currentAttribute.group === group.name) {
+                return true
+            }
+        } 
+        return false;
+    }
+    
     $scope.$watch('isRequired', function() {
         if ($scope.isRequired) {
             $scope.currentAttribute.required = {
@@ -1720,8 +1794,19 @@ module.controller('RealmUserProfileCtrl', function($scope, Realm, realm, clientS
         $scope.currentAttribute.validations = newValidators;
     };
 
+    $scope.reloadConfigurationFromUserProfile = function () {
+        UserProfile.get({realm: realm.realm}, function(config) {
+            $scope.config = config;
+            $scope.rawConfig = angular.toJson(config, true);
+        });
+    }
+
     $scope.save = function() {
-        if (!$scope.isShowAttributes) {
+        $scope.save(true)
+    }
+    
+    $scope.save = function(reload) {
+        if ($scope.isShowJsonEditor) {
             $scope.config = JSON.parse($scope.rawConfig);
         }
 
@@ -1740,26 +1825,52 @@ module.controller('RealmUserProfileCtrl', function($scope, Realm, realm, clientS
                 $scope.currentAttribute.selector.scopes.push($scope.selectorByScope[i].name);
             }
 
-            if ($scope.isCreate) {
+            if ($scope.isCreateAttribute) {
                 $scope.config['attributes'].push($scope.currentAttribute);
             }
         }
 
+        if ($scope.currentAttributeGroup) {
+            if ($scope.config['groups'] == null) {
+                $scope.config['groups'] = []
+            }
+            if ($scope.isCreateAttributeGroup) {
+                $scope.config['groups'].push($scope.currentAttributeGroup);
+            }
+        }
+
         UserProfile.update({realm: realm.realm},
+            
             $scope.config,  function () {
                 $scope.attributeSelected = false;
                 delete $scope.currentAttribute;
-                delete $scope.isCreate;
+                delete $scope.isCreateAttribute
+                delete $scope.attributeSelected;
+                delete $scope.currentAttributeGroup;
+                delete $scope.isCreateAttributeGroup;
+                delete $scope.attributeGroupSelected;
                 delete $scope.isRequired;
                 delete $scope.canUserView;
                 delete $scope.canAdminView;
                 delete $scope.canUserEdit;
                 delete $scope.canAdminEdit;
-                $route.reload();
+                
+                if (reload) {
+                    $route.reload();
+                } else {
+                    $scope.reloadConfigurationFromUserProfile();
+                }
                 Notifications.success("User Profile configuration has been saved.");
             });
     };
-
+    
+    $scope.cancelEditAttributeGroup = function() {
+        delete $scope.currentAttributeGroup;
+        delete $scope.isCreateAttributeGroup;
+        delete $scope.attributeGroupSelected;
+        $scope.reloadConfigurationFromUserProfile();
+    }
+    
     $scope.reset = function() {
         $route.reload();
     };

@@ -18,19 +18,19 @@
 package org.keycloak.models.map.authorization.entity;
 
 import org.keycloak.models.map.common.AbstractEntity;
+import org.keycloak.models.map.common.UpdatableEntity;
 import org.keycloak.representations.idm.authorization.DecisionStrategy;
 import org.keycloak.representations.idm.authorization.Logic;
 
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.Map;
 import java.util.Objects;
 
-public class MapPolicyEntity<K> implements AbstractEntity<K> {
+public class MapPolicyEntity implements AbstractEntity, UpdatableEntity {
     
-    private final K id;
+    private final String id;
     private String name;
     private String description;
     private String type;
@@ -44,7 +44,7 @@ public class MapPolicyEntity<K> implements AbstractEntity<K> {
     private String owner;
     private boolean updated = false;
 
-    public MapPolicyEntity(K id) {
+    public MapPolicyEntity(String id) {
         this.id = id;
     }
 
@@ -178,7 +178,7 @@ public class MapPolicyEntity<K> implements AbstractEntity<K> {
     }
 
     @Override
-    public K getId() {
+    public String getId() {
         return id;
     }
 

@@ -32,7 +32,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
+import org.keycloak.Config;
+import org.keycloak.common.Profile;
 import org.keycloak.common.util.MultivaluedHashMap;
 import org.keycloak.component.AmphibianProviderFactory;
 import org.keycloak.component.ComponentModel;
@@ -53,11 +56,13 @@ import org.keycloak.userprofile.config.UPAttributeRequired;
 import org.keycloak.userprofile.config.UPAttributeSelector;
 import org.keycloak.userprofile.config.UPConfig;
 import org.keycloak.userprofile.config.UPConfigUtils;
+import org.keycloak.userprofile.config.UPGroup;
 import org.keycloak.userprofile.validator.AttributeRequiredByMetadataValidator;
 import org.keycloak.userprofile.validator.BlankAttributeValidator;
 import org.keycloak.userprofile.validator.ImmutableAttributeValidator;
 import org.keycloak.validate.AbstractSimpleValidator;
 import org.keycloak.validate.ValidatorConfig;
+import org.keycloak.validate.validators.EmailValidator;
 
 /**
  * {@link UserProfileProvider} loading configuration from the changeable JSON file stored in component config. Parsed
@@ -74,6 +79,8 @@ public class DeclarativeUserProfileProvider extends AbstractUserProfileProvider<
     public static final String REALM_USER_PROFILE_ENABLED = "userProfileEnabled";
     private static final String PARSED_CONFIG_COMPONENT_KEY = "kc.user.profile.metadata";
     private static final String UP_PIECE_COMPONENT_CONFIG_KEY_BASE = "config-piece-";
+
+    private static boolean isDeclarativeConfigurationEnabled;
 
     /**
      * Method used for predicate which returns true if any of the configuredScopes is requested in current auth flow.
@@ -136,6 +143,13 @@ public class DeclarativeUserProfileProvider extends AbstractUserProfileProvider<
                 decoratedMetadata.addAttribute(UserModel.FIRST_NAME, 1, new AttributeValidatorMetadata(BlankAttributeValidator.ID, BlankAttributeValidator.createConfig(
                         Messages.MISSING_FIRST_NAME, metadata.getContext() == UserProfileContext.IDP_REVIEW))).setAttributeDisplayName("${firstName}");
                 decoratedMetadata.addAttribute(UserModel.LAST_NAME, 2, new AttributeValidatorMetadata(BlankAttributeValidator.ID, BlankAttributeValidator.createConfig(Messages.MISSING_LAST_NAME, metadata.getContext() == UserProfileContext.IDP_REVIEW))).setAttributeDisplayName("${lastName}");
+                
+                //add email format validator to legacy profile
+                List<AttributeMetadata> em = decoratedMetadata.getAttribute(UserModel.EMAIL);
+                for(AttributeMetadata e: em) {
+                    e.addValidator(new AttributeValidatorMetadata(EmailValidator.ID, ValidatorConfig.builder().config(EmailValidator.IGNORE_EMPTY_VALUE, true).build()));
+                }
+                
                 return decoratedMetadata;
             }
             return decoratedMetadata;
@@ -225,12 +239,14 @@ public class DeclarativeUserProfileProvider extends AbstractUserProfileProvider<
     }
 
     @Override
-    public void postInit(KeycloakSessionFactory factory) {
+    public List<ProviderConfigProperty> getConfigProperties() {
+        return Collections.emptyList();
     }
 
     @Override
-    public List<ProviderConfigProperty> getConfigProperties() {
-        return Collections.emptyList();
+    public void init(Config.Scope config) {
+        super.init(config);
+        isDeclarativeConfigurationEnabled = Profile.isFeatureEnabled(Profile.Feature.DECLARATIVE_USER_PROFILE);
     }
 
     public ComponentModel getComponentModel() {
@@ -255,7 +271,9 @@ public class DeclarativeUserProfileProvider extends AbstractUserProfileProvider<
             return decoratedMetadata;
         }
 
+        Map<String, UPGroup> groupsByName = asHashMap(parsedConfig.getGroups());
         int guiOrder = 0;
+        
         for (UPAttribute attrConfig : parsedConfig.getAttributes()) {
             String attributeName = attrConfig.getName();
             List<AttributeValidatorMetadata> validators = new ArrayList<>();
@@ -313,6 +331,8 @@ public class DeclarativeUserProfileProvider extends AbstractUserProfileProvider<
             }
 
             Map<String, Object> annotations = attrConfig.getAnnotations();
+            String attributeGroup = attrConfig.getGroup();
+            AttributeGroupMetadata groupMetadata = toAttributeGroupMeta(groupsByName.get(attributeGroup));
 
             if (isUsernameOrEmailAttribute(attributeName)) {
                 if (permissions == null) {
@@ -324,21 +344,42 @@ public class DeclarativeUserProfileProvider extends AbstractUserProfileProvider<
                 if (atts.isEmpty()) {
                     // attribute metadata doesn't exist so we have to add it. We keep it optional as Abstract base
                     // doesn't require it.
-                    decoratedMetadata.addAttribute(attributeName, guiOrder++, writeAllowed, validators).addAnnotations(annotations).setAttributeDisplayName(attrConfig.getDisplayName());
+                    decoratedMetadata.addAttribute(attributeName, guiOrder++, writeAllowed, validators)
+                            .addAnnotations(annotations)
+                            .setAttributeDisplayName(attrConfig.getDisplayName())
+                            .setAttributeGroupMetadata(groupMetadata);
                 } else {
                     final int localGuiOrder = guiOrder++;
                     // only add configured validators and annotations if attribute metadata exist
-                    atts.stream().forEach(c -> c.addValidator(validators).addAnnotations(annotations).setAttributeDisplayName(attrConfig.getDisplayName()).setGuiOrder(localGuiOrder));
+                    atts.stream().forEach(c -> c.addValidator(validators)
+                            .addAnnotations(annotations)
+                            .setAttributeDisplayName(attrConfig.getDisplayName())
+                            .setGuiOrder(localGuiOrder)
+                            .setAttributeGroupMetadata(groupMetadata));
                 }
             } else {
-                // always add validation for imuttable/read-only attributes
+                // always add validation for immutable/read-only attributes
                 validators.add(new AttributeValidatorMetadata(ImmutableAttributeValidator.ID));
-                decoratedMetadata.addAttribute(attributeName, guiOrder++, validators, selector, writeAllowed, required, readAllowed).addAnnotations(annotations).setAttributeDisplayName(attrConfig.getDisplayName());
+                decoratedMetadata.addAttribute(attributeName, guiOrder++, validators, selector, writeAllowed, required, readAllowed)
+                        .addAnnotations(annotations)
+                        .setAttributeDisplayName(attrConfig.getDisplayName())
+                        .setAttributeGroupMetadata(groupMetadata);
             }
         }
 
         return decoratedMetadata;
 
+    }
+
+    private Map<String, UPGroup> asHashMap(List<UPGroup> groups) {
+        return groups.stream().collect(Collectors.toMap(g -> g.getName(), g -> g));
+    }
+    
+    private AttributeGroupMetadata toAttributeGroupMeta(UPGroup group) {
+        if (group == null) {
+            return null;
+        }
+        return new AttributeGroupMetadata(group.getName(), group.getDisplayHeader(), group.getDisplayDescription(), group.getAnnotations());
     }
 
     private boolean isUsernameOrEmailAttribute(String attributeName) {
@@ -442,6 +483,6 @@ public class DeclarativeUserProfileProvider extends AbstractUserProfileProvider<
      * @return {@code true} if the declarative provider is enabled. Otherwise, {@code false}.
      */
     private Boolean isEnabled(KeycloakSession session) {
-        return session.getContext().getRealm().getAttribute(REALM_USER_PROFILE_ENABLED, false);
+        return isDeclarativeConfigurationEnabled && session.getContext().getRealm().getAttribute(REALM_USER_PROFILE_ENABLED, false);
     }
 }

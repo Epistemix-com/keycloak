@@ -619,8 +619,26 @@ module.controller('ClientOidcKeyCtrl', function($scope, $location, realm, client
         }
     }
 
-    $scope.switchChange = function() {
+    if ($scope.client.attributes["use.jwks.string"]) {
+        if ($scope.client.attributes["use.jwks.string"] == "true") {
+            $scope.useJwksString = true;
+        } else {
+            $scope.useJwksString = false;
+        }
+    }
+
+    $scope.jwksUrlSwitchChange = function() {
         $scope.changed = true;
+        if ($scope.useJwksUrl == false) {
+            $scope.useJwksString = false;
+        }
+    }
+
+    $scope.jwksStringSwitchChange = function() {
+        $scope.changed = true;
+        if ($scope.useJwksString == false) {
+            $scope.useJwksUrl = false;
+        }
     }
 
     $scope.save = function() {
@@ -629,6 +647,12 @@ module.controller('ClientOidcKeyCtrl', function($scope, $location, realm, client
             $scope.client.attributes["use.jwks.url"] = "true";
         } else {
             $scope.client.attributes["use.jwks.url"] = "false";
+        }
+
+        if ($scope.useJwksString == true) {
+            $scope.client.attributes["use.jwks.string"] = "true";
+        } else {
+            $scope.client.attributes["use.jwks.string"] = "false";
         }
 
         Client.update({
@@ -1314,6 +1338,15 @@ module.controller('ClientDetailCtrl', function($scope, realm, client, flows, $ro
         var attrVal5 = $scope.client.attributes['ciba.backchannel.auth.request.signing.alg'];
         $scope.cibaBackchannelAuthRequestSigningAlg = attrVal5==null ? 'none' : attrVal5;
 
+        var attrVal6 = $scope.client.attributes['request.object.encryption.alg'];
+        $scope.requestObjectEncryptionAlg = attrVal6==null ? 'any' : attrVal6;
+
+        var attrVal7 = $scope.client.attributes['request.object.encryption.enc'];
+        $scope.requestObjectEncryptionEnc = attrVal7==null ? 'any' : attrVal7;
+
+        var attrVal8 = $scope.client.attributes['ciba.backchannel.auth.request.signing.alg'];
+        $scope.cibaBackchannelAuthRequestSigningAlg = attrVal8==null ? 'any' : attrVal8;
+
         if ($scope.client.attributes["exclude.session.state.from.auth.response"]) {
             if ($scope.client.attributes["exclude.session.state.from.auth.response"] == "true") {
                 $scope.excludeSessionStateFromAuthResponse = true;
@@ -1337,6 +1370,8 @@ module.controller('ClientDetailCtrl', function($scope, realm, client, flows, $ro
                $scope.oidcCibaGrantEnabled = false;
            }
        }
+
+       $scope.cibaBackchannelTokenDeliveryMode = $scope.client.attributes['ciba.backchannel.token.delivery.mode'];
 
        if ($scope.client.attributes["use.refresh.tokens"]) {
            if ($scope.client.attributes["use.refresh.tokens"] == "true") {
@@ -1527,16 +1562,36 @@ module.controller('ClientDetailCtrl', function($scope, realm, client, flows, $ro
         }
     };
 
+    $scope.changeRequestObjectEncryptionAlg = function() {
+        if ($scope.requestObjectEncryptionAlg === 'any') {
+            $scope.clientEdit.attributes['request.object.encryption.alg'] = null;
+        } else {
+            $scope.clientEdit.attributes['request.object.encryption.alg'] = $scope.requestObjectEncryptionAlg;
+        }
+    };
+
+    $scope.changeRequestObjectEncryptionEnc = function() {
+        if ($scope.requestObjectEncryptionEnc === 'any') {
+            $scope.clientEdit.attributes['request.object.encryption.enc'] = null;
+        } else {
+            $scope.clientEdit.attributes['request.object.encryption.enc'] = $scope.requestObjectEncryptionEnc;
+        }
+    };
+
     $scope.changePkceCodeChallengeMethod = function() {
         $scope.clientEdit.attributes['pkce.code.challenge.method'] = $scope.pkceCodeChallengeMethod;
     };
 
     $scope.changeCibaBackchannelAuthRequestSigningAlg = function() {
-        if ($scope.cibaBackchannelAuthRequestSigningAlg === 'none') {
+        if ($scope.cibaBackchannelAuthRequestSigningAlg === 'any') {
             $scope.clientEdit.attributes['ciba.backchannel.auth.request.signing.alg'] = null;
         } else {
             $scope.clientEdit.attributes['ciba.backchannel.auth.request.signing.alg'] = $scope.cibaBackchannelAuthRequestSigningAlg;
         }
+    };
+
+    $scope.changeCibaBackchannelTokenDeliveryMode = function() {
+        $scope.clientEdit.attributes['ciba.backchannel.token.delivery.mode'] = $scope.cibaBackchannelTokenDeliveryMode;
     };
 
     $scope.changeAuthorizationSignedResponseAlg = function() {

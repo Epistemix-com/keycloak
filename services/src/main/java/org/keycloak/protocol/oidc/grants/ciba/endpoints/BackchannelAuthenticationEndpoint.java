@@ -38,6 +38,7 @@ import org.keycloak.protocol.oidc.grants.ciba.clientpolicy.context.BackchannelAu
 import org.keycloak.protocol.oidc.grants.ciba.endpoints.request.BackchannelAuthenticationEndpointRequest;
 import org.keycloak.protocol.oidc.grants.ciba.endpoints.request.BackchannelAuthenticationEndpointRequestParserProcessor;
 import org.keycloak.protocol.oidc.grants.ciba.resolvers.CIBALoginUserResolver;
+import org.keycloak.representations.idm.OAuth2ErrorRepresentation;
 import org.keycloak.services.ErrorResponseException;
 import org.keycloak.services.clientpolicy.ClientPolicyException;
 import org.keycloak.util.JsonSerialization;
@@ -45,10 +46,12 @@ import org.keycloak.util.JsonSerialization;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.POST;
 import javax.ws.rs.Produces;
+import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.Response;
+
 import java.util.Collections;
 import java.util.Optional;
 
@@ -94,7 +97,7 @@ public class BackchannelAuthenticationEndpoint extends AbstractCibaEndpoint {
                 CibaConfig cibaPolicy = realm.getCibaPolicy();
                 int poolingInterval = cibaPolicy.getPoolingInterval();
 
-                storeAuthenticationRequest(request, cibaPolicy);
+                storeAuthenticationRequest(request, cibaPolicy, authReqId);
 
                 ObjectNode response = JsonSerialization.createObjectNode();
 
@@ -120,13 +123,19 @@ public class BackchannelAuthenticationEndpoint extends AbstractCibaEndpoint {
      * but probably make the {@link OAuth2DeviceTokenStoreProvider} more generic for ciba, device, or any other use case
      * that relies on cross-references for unsolicited user authentication requests from devices.
      */
-    private void storeAuthenticationRequest(CIBAAuthenticationRequest request, CibaConfig cibaConfig) {
+    private void storeAuthenticationRequest(CIBAAuthenticationRequest request, CibaConfig cibaConfig, String authReqId) {
         ClientModel client = request.getClient();
         int expiresIn = cibaConfig.getExpiresIn();
         int poolingInterval = cibaConfig.getPoolingInterval();
+        String cibaMode = cibaConfig.getBackchannelTokenDeliveryMode(client);
+
+        // Set authReqId just for the ping mode as it is relatively big and not necessarily needed in the infinispan cache for the "poll" mode
+        if (!CibaConfig.CIBA_PING_MODE.equals(cibaMode)) {
+            authReqId = null;
+        }
 
         OAuth2DeviceCodeModel deviceCode = OAuth2DeviceCodeModel.create(realm, client,
-                request.getId(), request.getScope(), null, expiresIn, poolingInterval,
+                request.getId(), request.getScope(), null, expiresIn, poolingInterval, request.getClientNotificationToken(), authReqId,
                 Collections.emptyMap());
         String authResultId = request.getAuthResultId();
         OAuth2DeviceUserCodeModel userCode = new OAuth2DeviceUserCodeModel(realm, deviceCode.getDeviceCode(),
@@ -141,7 +150,13 @@ public class BackchannelAuthenticationEndpoint extends AbstractCibaEndpoint {
     }
 
     private CIBAAuthenticationRequest authorizeClient(MultivaluedMap<String, String> params) {
-        ClientModel client = authenticateClient();
+        ClientModel client = null;
+        try {
+            client = authenticateClient();
+        } catch (WebApplicationException wae) {
+            OAuth2ErrorRepresentation errorRep = (OAuth2ErrorRepresentation)wae.getResponse().getEntity();
+            throw new ErrorResponseException(errorRep.getError(), errorRep.getErrorDescription(), Response.Status.UNAUTHORIZED);
+        }
         BackchannelAuthenticationEndpointRequest endpointRequest = BackchannelAuthenticationEndpointRequestParserProcessor.parseRequest(event, session, client, params, realm.getCibaPolicy());
         UserModel user = resolveUser(endpointRequest, realm.getCibaPolicy().getAuthRequestedUserHint());
 
@@ -176,8 +191,19 @@ public class BackchannelAuthenticationEndpoint extends AbstractCibaEndpoint {
         request.setScope(scopes.toString());
 
         if (endpointRequest.getClientNotificationToken() != null) {
+            if (!policy.getBackchannelTokenDeliveryMode(client).equals(CibaConfig.CIBA_PING_MODE)) {
+                throw new ErrorResponseException(OAuthErrorException.INVALID_REQUEST,
+                        "Client Notification token supported only for the ping mode", Response.Status.BAD_REQUEST);
+            }
+            if (endpointRequest.getClientNotificationToken().length() > 1024) {
+                throw new ErrorResponseException(OAuthErrorException.INVALID_REQUEST,
+                        "Client Notification token length is limited to 1024 characters", Response.Status.BAD_REQUEST);
+            }
+            request.setClientNotificationToken(endpointRequest.getClientNotificationToken());
+        }
+        if (endpointRequest.getClientNotificationToken() == null && policy.getBackchannelTokenDeliveryMode(client).equals(CibaConfig.CIBA_PING_MODE)) {
             throw new ErrorResponseException(OAuthErrorException.INVALID_REQUEST,
-                    "Ping and push modes not supported. Use poll mode instead.", Response.Status.BAD_REQUEST);
+                    "Client Notification token needs to be provided with the ping mode", Response.Status.BAD_REQUEST);
         }
 
         if (endpointRequest.getUserCode() != null) {
@@ -188,7 +214,7 @@ public class BackchannelAuthenticationEndpoint extends AbstractCibaEndpoint {
         extractAdditionalParams(endpointRequest, request);
 
         try {
-            session.clientPolicy().triggerOnEvent(new BackchannelAuthenticationRequestContext(endpointRequest, params));
+            session.clientPolicy().triggerOnEvent(new BackchannelAuthenticationRequestContext(endpointRequest, request, params));
         } catch (ClientPolicyException cpe) {
             throw new ErrorResponseException(cpe.getError(), cpe.getErrorDetail(), Response.Status.BAD_REQUEST);
         }

@@ -60,9 +60,10 @@ public class Profile {
         UPLOAD_SCRIPTS(DEPRECATED),
         WEB_AUTHN(Type.DEFAULT, Type.PREVIEW),
         CLIENT_POLICIES(Type.DEFAULT),
-        CIBA(Type.PREVIEW),
+        CIBA(Type.DEFAULT),
         MAP_STORAGE(Type.EXPERIMENTAL),
-        PAR(Type.PREVIEW);
+        PAR(Type.DEFAULT),
+        DECLARATIVE_USER_PROFILE(Type.PREVIEW);
 
         private final Type typeProject;
         private final Type typeProduct;
@@ -211,6 +212,10 @@ public class Profile {
 
     public static boolean isFeatureEnabled(Feature feature) {
         return !getInstance().disabledFeatures.contains(feature);
+    }
+
+    public static boolean isProduct() {
+        return getInstance().profile.equals(ProfileValue.PRODUCT);
     }
 
     private class Config {

@@ -43,6 +43,7 @@ import java.util.function.Consumer;
 
 import org.junit.Assert;
 import org.junit.Test;
+import org.keycloak.common.Profile;
 import org.keycloak.component.ComponentModel;
 import org.keycloak.component.ComponentValidationException;
 import org.keycloak.models.Constants;
@@ -53,8 +54,12 @@ import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.RealmRepresentation;
 import org.keycloak.services.messages.Messages;
 import org.keycloak.testsuite.arquillian.annotation.AuthServerContainerExclude;
+import org.keycloak.testsuite.arquillian.annotation.EnableFeature;
+import org.keycloak.testsuite.arquillian.annotation.SetDefaultProvider;
 import org.keycloak.testsuite.runonserver.RunOnServer;
+import org.keycloak.userprofile.AttributeGroupMetadata;
 import org.keycloak.userprofile.DeclarativeUserProfileProvider;
+import org.keycloak.userprofile.UserProfileSpi;
 import org.keycloak.userprofile.config.UPAttribute;
 import org.keycloak.userprofile.config.UPAttributePermissions;
 import org.keycloak.userprofile.config.UPAttributeRequired;
@@ -76,7 +81,6 @@ import org.keycloak.validate.validators.LengthValidator;
 /**
  * @author <a href="mailto:psilva@redhat.com">Pedro Igor</a>
  */
-@AuthServerContainerExclude(AuthServerContainerExclude.AuthServer.REMOTE)
 public class UserProfileTest extends AbstractUserProfileTest {
 
     protected static final String ATT_ADDRESS = "address";
@@ -347,6 +351,67 @@ public class UserProfileTest extends AbstractUserProfileTest {
         profile.validate();
 
         assertNotNull(attributes.getFirstValue("address"));
+    }
+
+    @Test
+    public void testGetProfileAttributeGroups() {
+        getTestingClient().server(TEST_REALM_NAME).run((RunOnServer) UserProfileTest::testGetProfileAttributeGroups);
+    }
+
+    private static void testGetProfileAttributeGroups(KeycloakSession session) {
+        RealmModel realm = session.getContext().getRealm();
+        UserModel user = session.users().addUser(realm, org.keycloak.models.utils.KeycloakModelUtils.generateId());
+        UserProfileProvider provider = getDynamicUserProfileProvider(session);
+
+        String configuration = "{\n" +
+                "  \"attributes\": [\n" +
+                "    {\n" +
+                "      \"name\": \"address\",\n" +
+                "      \"group\": \"companyaddress\"\n" +
+                "    },\n" +
+                "    {\n" +
+                "      \"name\": \"second\",\n" +
+                "      \"group\": \"groupwithanno" + "\"\n" +
+                "    }\n" +
+                "  ],\n" +
+                "  \"groups\": [\n" +
+                "    {\n" +
+                "      \"name\": \"companyaddress\",\n" +
+                "      \"displayHeader\": \"header\",\n" +
+                "      \"displayDescription\": \"description\"\n" +
+                "    },\n" +
+                "    {\n" +
+                "      \"name\": \"groupwithanno\",\n" +
+                "      \"annotations\": {\n" +
+                "        \"anno1\": \"value1\",\n" +
+                "        \"anno2\": \"value2\"\n" +
+                "      }\n" +
+                "    }\n" +
+                "  ]\n" +
+                "}\n";
+        provider.setConfiguration(configuration);
+
+        UserProfile profile = provider.create(UserProfileContext.ACCOUNT, user);
+        Attributes attributes = profile.getAttributes();
+
+        assertThat(attributes.nameSet(),
+                containsInAnyOrder(UserModel.USERNAME, UserModel.EMAIL, UserModel.FIRST_NAME, UserModel.LAST_NAME, "address", "second"));
+        
+        
+        AttributeGroupMetadata companyAddressGroup = attributes.getMetadata("address").getAttributeGroupMetadata();
+        assertEquals("companyaddress", companyAddressGroup.getName());
+        assertEquals("header", companyAddressGroup.getDisplayHeader());
+        assertEquals("description", companyAddressGroup.getDisplayDescription());
+        assertNull(companyAddressGroup.getAnnotations());
+        
+        AttributeGroupMetadata groupwithannoGroup = attributes.getMetadata("second").getAttributeGroupMetadata();
+        assertEquals("groupwithanno", groupwithannoGroup.getName());
+        assertNull(groupwithannoGroup.getDisplayHeader());
+        assertNull(groupwithannoGroup.getDisplayDescription());
+        Map<String, Object> annotations = groupwithannoGroup.getAnnotations();
+        assertEquals(2, annotations.size());
+        assertEquals("value1", annotations.get("anno1"));
+        assertEquals("value2", annotations.get("anno2"));
     }
 
     @Test
@@ -693,7 +758,7 @@ public class UserProfileTest extends AbstractUserProfileTest {
             fail("Should fail validation");
         } catch (ValidationException ve) {
             assertTrue(ve.isAttributeOnError(UserModel.USERNAME));
-            assertTrue(ve.hasError(LengthValidator.MESSAGE_INVALID_LENGTH));
+            assertTrue(ve.hasError(LengthValidator.MESSAGE_INVALID_LENGTH_TOO_SHORT));
         }
 
         attributes.put(UserModel.USERNAME, "user");
@@ -704,7 +769,7 @@ public class UserProfileTest extends AbstractUserProfileTest {
 
         provider.setConfiguration(null);
 
-        attributes.put(UserModel.USERNAME, "us");
+        attributes.put(UserModel.USERNAME, "user");
         attributes.put(UserModel.FIRST_NAME, "Joe");
         attributes.put(UserModel.LAST_NAME, "Doe");
 
