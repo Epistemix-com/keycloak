@@ -139,7 +139,6 @@ import org.keycloak.services.resources.RealmsResource;
 import org.keycloak.testsuite.adapter.page.*;
 import org.keycloak.testsuite.admin.ApiUtil;
 import org.keycloak.testsuite.arquillian.annotation.AppServerContainer;
-import org.keycloak.testsuite.arquillian.annotation.AuthServerContainerExclude;
 import org.keycloak.testsuite.util.ServerURLs;
 import org.keycloak.testsuite.utils.arquillian.ContainerConstants;
 import org.keycloak.testsuite.auth.page.login.Login;
@@ -178,7 +177,6 @@ import org.xml.sax.SAXException;
 @AppServerContainer(ContainerConstants.APP_SERVER_EAP)
 @AppServerContainer(ContainerConstants.APP_SERVER_EAP6)
 @AppServerContainer(ContainerConstants.APP_SERVER_EAP71)
-@AppServerContainer(ContainerConstants.APP_SERVER_TOMCAT7)
 @AppServerContainer(ContainerConstants.APP_SERVER_TOMCAT8)
 @AppServerContainer(ContainerConstants.APP_SERVER_TOMCAT9)
 public class SAMLServletAdapterTest extends AbstractSAMLServletAdapterTest {
@@ -660,7 +658,7 @@ public class SAMLServletAdapterTest extends AbstractSAMLServletAdapterTest {
 
         ComponentRepresentation rep = new ComponentRepresentation();
         rep.setName("mycomponent");
-        rep.setParentId("demo");
+        rep.setParentId(adminClient.realm(DEMO).toRepresentation().getId());
         rep.setProviderId(ImportedRsaKeyProviderFactory.ID);
         rep.setProviderType(KeyProvider.class.getName());
 
@@ -675,7 +673,8 @@ public class SAMLServletAdapterTest extends AbstractSAMLServletAdapterTest {
     }
 
     private void dropKeys(String priority) {
-        for (ComponentRepresentation c : testRealmResource().components().query("demo", KeyProvider.class.getName())) {
+        String parentId = adminClient.realm(DEMO).toRepresentation().getId();
+        for (ComponentRepresentation c : testRealmResource().components().query(parentId, KeyProvider.class.getName())) {
             if (c.getConfig().getFirst("priority").equals(priority)) {
                 testRealmResource().components().component(c.getId()).remove();
                 return;
@@ -940,7 +939,7 @@ public class SAMLServletAdapterTest extends AbstractSAMLServletAdapterTest {
     @Test
     // https://issues.jboss.org/browse/KEYCLOAK-3971
     public void salesPostSigTestUnicodeCharacters() {
-        final String username = "ěščřžýáíRoàåéèíñòøöùüßÅÄÖÜ";
+        final String username = "ěščřžýáíroàåéèíñòøöùüßåäöü";
         UserRepresentation user = UserBuilder
           .edit(createUserRepresentation(username, "xyz@redhat.com", "ěščřžýáí", "RoàåéèíñòøöùüßÅÄÖÜ", true))
           .addPassword(PASSWORD)
@@ -966,7 +965,7 @@ public class SAMLServletAdapterTest extends AbstractSAMLServletAdapterTest {
     @Test
     // https://issues.jboss.org/browse/KEYCLOAK-3971
     public void employeeSigTestUnicodeCharacters() {
-        final String username = "ěščřžýáíRoàåéèíñòøöùüßÅÄÖÜ";
+        final String username = "ěščřžýáíroàåéèíñòøöùüßåäöü";
         UserRepresentation user = UserBuilder
           .edit(createUserRepresentation(username, "xyz@redhat.com", "ěščřžýáí", "RoàåéèíñòøöùüßÅÄÖÜ", true))
           .addPassword(PASSWORD)
@@ -1590,8 +1589,6 @@ public class SAMLServletAdapterTest extends AbstractSAMLServletAdapterTest {
         client.close();
     }
 
-    @AuthServerContainerExclude(value = AuthServerContainerExclude.AuthServer.QUARKUS, details =
-            "Exclude Quarkus because when running on Java 9+ you get CNF exceptions due to the fact that javax.xml.soap was removed (as well as other JEE modules). Need to discuss how we are going to solve this for both main dist and Quarkus")
     @Test
     public void testSuccessfulEcpFlow() throws Exception {
         Response authnRequestResponse = AdminClientUtil.createResteasyClient().target(ecpSPPage.toString()).request()
@@ -1682,8 +1679,6 @@ public class SAMLServletAdapterTest extends AbstractSAMLServletAdapterTest {
         Assert.assertThat(resourceResponse.readEntity(String.class), containsString("pedroigor"));
     }
 
-    @AuthServerContainerExclude(value = AuthServerContainerExclude.AuthServer.QUARKUS, details =
-    "Exclude Quarkus because when running on Java 9+ you get CNF exceptions due to the fact that javax.xml.soap was removed (as well as other JEE modules). Need to discuss how we are going to solve this for both main dist and Quarkus")
     @Test
     public void testInvalidCredentialsEcpFlow() throws Exception {
         Response authnRequestResponse = AdminClientUtil.createResteasyClient().target(ecpSPPage.toString()).request()

@@ -26,11 +26,13 @@ import org.keycloak.authorization.jpa.entities.ScopeEntity;
 import org.keycloak.authorization.model.ResourceServer;
 import org.keycloak.authorization.store.ResourceServerStore;
 import org.keycloak.models.ModelException;
+import org.keycloak.models.RealmModel;
 import org.keycloak.storage.StorageId;
 
 import javax.persistence.EntityManager;
 import javax.persistence.TypedQuery;
 import java.util.List;
+import org.keycloak.models.ClientModel;
 
 /**
  * @author <a href="mailto:psilva@redhat.com">Pedro Igor</a>
@@ -46,7 +48,8 @@ public class JPAResourceServerStore implements ResourceServerStore {
     }
 
     @Override
-    public ResourceServer create(String clientId) {
+    public ResourceServer create(ClientModel client) {
+        String clientId = client.getId();
         if (!StorageId.isLocalStorage(clientId)) {
             throw new ModelException("Creating resource server from federated ClientModel not supported");
         }
@@ -56,11 +59,12 @@ public class JPAResourceServerStore implements ResourceServerStore {
 
         this.entityManager.persist(entity);
 
-        return new ResourceServerAdapter(entity, entityManager, provider.getStoreFactory());
+        return new ResourceServerAdapter(client.getRealm(), entity, entityManager, provider.getStoreFactory());
     }
 
     @Override
-    public void delete(String id) {
+    public void delete(ClientModel client) {
+        String id = client.getId();
         ResourceServerEntity entity = entityManager.find(ResourceServerEntity.class, id);
         if (entity == null) return;
         //This didn't work, had to loop through and remove each policy individually
@@ -119,9 +123,14 @@ public class JPAResourceServerStore implements ResourceServerStore {
     }
 
     @Override
-    public ResourceServer findById(String id) {
+    public ResourceServer findById(RealmModel realm, String id) {
         ResourceServerEntity entity = entityManager.find(ResourceServerEntity.class, id);
         if (entity == null) return null;
-        return new ResourceServerAdapter(entity, entityManager, provider.getStoreFactory());
+        return new ResourceServerAdapter(provider.getRealm(), entity, entityManager, provider.getStoreFactory());
+    }
+
+    @Override
+    public ResourceServer findByClient(ClientModel client) {
+        return findById(null, client.getId());
     }
 }

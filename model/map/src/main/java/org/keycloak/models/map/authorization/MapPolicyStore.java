@@ -21,16 +21,20 @@ import org.jboss.logging.Logger;
 import org.keycloak.authorization.AuthorizationProvider;
 import org.keycloak.authorization.model.Policy;
 import org.keycloak.authorization.model.Policy.SearchableFields;
+import org.keycloak.authorization.model.Resource;
 import org.keycloak.authorization.model.ResourceServer;
+import org.keycloak.authorization.model.Scope;
 import org.keycloak.authorization.store.PolicyStore;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.ModelDuplicateException;
+import org.keycloak.models.RealmModel;
 import org.keycloak.models.map.authorization.adapter.MapPolicyAdapter;
 import org.keycloak.models.map.authorization.entity.MapPolicyEntity;
+import org.keycloak.models.map.authorization.entity.MapPolicyEntityImpl;
 import org.keycloak.models.map.storage.MapKeycloakTransaction;
 import org.keycloak.models.map.storage.MapStorage;
-import org.keycloak.models.map.storage.ModelCriteriaBuilder;
 import org.keycloak.models.map.storage.ModelCriteriaBuilder.Operator;
+import org.keycloak.models.map.storage.criteria.DefaultModelCriteria;
 import org.keycloak.representations.idm.authorization.AbstractPolicyRepresentation;
 
 import java.util.Arrays;
@@ -38,46 +42,51 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static org.keycloak.common.util.StackUtil.getShortStackTrace;
 import static org.keycloak.models.map.storage.QueryParameters.withCriteria;
+import static org.keycloak.models.map.storage.criteria.DefaultModelCriteria.criteria;
 
 public class MapPolicyStore implements PolicyStore {
 
     private static final Logger LOG = Logger.getLogger(MapPolicyStore.class);
     private final AuthorizationProvider authorizationProvider;
     final MapKeycloakTransaction<MapPolicyEntity, Policy> tx;
-    private final MapStorage<MapPolicyEntity, Policy> policyStore;
+    private final KeycloakSession session;
 
     public MapPolicyStore(KeycloakSession session, MapStorage<MapPolicyEntity, Policy> policyStore, AuthorizationProvider provider) {
         this.authorizationProvider = provider;
-        this.policyStore = policyStore;
         this.tx = policyStore.createTransaction(session);
         session.getTransactionManager().enlist(tx);
+        this.session = session;
     }
 
-    private Policy entityToAdapter(MapPolicyEntity origEntity) {
-        if (origEntity == null) return null;
-        // Clone entity before returning back, to avoid giving away a reference to the live object to the caller
-        return new MapPolicyAdapter(origEntity, authorizationProvider.getStoreFactory());
+    private Function<MapPolicyEntity, Policy> entityToAdapterFunc(ResourceServer resourceServer) {
+        return origEntity -> new MapPolicyAdapter(resourceServer == null ? findResourceServer(origEntity) : resourceServer, origEntity, authorizationProvider.getStoreFactory());
     }
 
-    private ModelCriteriaBuilder<Policy> forResourceServer(String resourceServerId) {
-        ModelCriteriaBuilder<Policy> mcb = policyStore.createCriteriaBuilder();
+    private ResourceServer findResourceServer(MapPolicyEntity entity) {
+        RealmModel realm = session.realms().getRealm(entity.getRealmId());
+        return authorizationProvider.getStoreFactory().getResourceServerStore().findById(realm, entity.getResourceServerId());
+    }
 
-        return resourceServerId == null
+    private DefaultModelCriteria<Policy> forResourceServer(ResourceServer resourceServer) {
+        DefaultModelCriteria<Policy> mcb = criteria();
+
+        return resourceServer == null
                 ? mcb
                 : mcb.compare(SearchableFields.RESOURCE_SERVER_ID, Operator.EQ,
-                resourceServerId);
+                resourceServer.getId());
     }
 
     @Override
-    public Policy create(AbstractPolicyRepresentation representation, ResourceServer resourceServer) {
+    public Policy create(ResourceServer resourceServer, AbstractPolicyRepresentation representation) {
         LOG.tracef("create(%s, %s, %s)%s", representation.getId(), resourceServer.getId(), resourceServer, getShortStackTrace());
 
         // @UniqueConstraint(columnNames = {"NAME", "RESOURCE_SERVER_ID"})
-        ModelCriteriaBuilder<Policy> mcb = forResourceServer(resourceServer.getId())
+        DefaultModelCriteria<Policy> mcb = forResourceServer(resourceServer)
                 .compare(SearchableFields.NAME, Operator.EQ, representation.getName());
 
         if (tx.getCount(withCriteria(mcb)) > 0) {
@@ -85,14 +94,16 @@ public class MapPolicyStore implements PolicyStore {
         }
 
         String uid = representation.getId();
-        MapPolicyEntity entity = new MapPolicyEntity(uid);
+        MapPolicyEntity entity = new MapPolicyEntityImpl();
+        entity.setId(uid);
         entity.setType(representation.getType());
         entity.setName(representation.getName());
         entity.setResourceServerId(resourceServer.getId());
-        
+        entity.setRealmId(resourceServer.getRealm().getId());
+
         entity = tx.create(entity);
 
-        return entityToAdapter(entity);
+        return entity == null ? null : entityToAdapterFunc(resourceServer).apply(entity);
     }
 
     @Override
@@ -102,75 +113,74 @@ public class MapPolicyStore implements PolicyStore {
     }
 
     @Override
-    public Policy findById(String id, String resourceServerId) {
-        LOG.tracef("findById(%s, %s)%s", id, resourceServerId, getShortStackTrace());
+    public Policy findById(ResourceServer resourceServer, String id) {
+        LOG.tracef("findById(%s, %s)%s", id, resourceServer, getShortStackTrace());
 
-        return tx.read(withCriteria(forResourceServer(resourceServerId)
+        return tx.read(withCriteria(forResourceServer(resourceServer)
                 .compare(SearchableFields.ID, Operator.EQ, id)))
                 .findFirst()
-                .map(this::entityToAdapter)
+                .map(entityToAdapterFunc(resourceServer))
                 .orElse(null);
     }
 
     @Override
-    public Policy findByName(String name, String resourceServerId) {
-        LOG.tracef("findByName(%s, %s)%s", name, resourceServerId, getShortStackTrace());
+    public Policy findByName(ResourceServer resourceServer, String name) {
+        LOG.tracef("findByName(%s, %s)%s", name, resourceServer, getShortStackTrace());
 
-        return tx.read(withCriteria(forResourceServer(resourceServerId)
+        return tx.read(withCriteria(forResourceServer(resourceServer)
                 .compare(SearchableFields.NAME, Operator.EQ, name)))
                 .findFirst()
-                .map(this::entityToAdapter)
+                .map(entityToAdapterFunc(resourceServer))
                 .orElse(null);
     }
 
     @Override
-    public List<Policy> findByResourceServer(String id) {
-        LOG.tracef("findByResourceServer(%s)%s", id, getShortStackTrace());
+    public List<Policy> findByResourceServer(ResourceServer resourceServer) {
+        LOG.tracef("findByResourceServer(%s)%s", resourceServer, getShortStackTrace());
 
-        return tx.read(withCriteria(forResourceServer(id)))
-                .map(this::entityToAdapter)
+        return tx.read(withCriteria(forResourceServer(resourceServer)))
+                .map(entityToAdapterFunc(resourceServer))
                 .collect(Collectors.toList());
     }
 
     @Override
-    public List<Policy> findByResourceServer(Map<Policy.FilterOption, String[]> attributes, String resourceServerId, int firstResult, int maxResult) {
-        LOG.tracef("findByResourceServer(%s, %s, %d, %d)%s", attributes, resourceServerId, firstResult, maxResult, getShortStackTrace());
+    public List<Policy> findByResourceServer(ResourceServer resourceServer, Map<Policy.FilterOption, String[]> attributes, Integer firstResult, Integer maxResults) {
+        LOG.tracef("findByResourceServer(%s, %s, %d, %d)%s", attributes, resourceServer, firstResult, maxResults, getShortStackTrace());
 
-        ModelCriteriaBuilder<Policy> mcb = forResourceServer(resourceServerId).and(
+        DefaultModelCriteria<Policy> mcb = forResourceServer(resourceServer).and(
                 attributes.entrySet().stream()
-                        .map(this::filterEntryToModelCriteriaBuilder)
+                        .map(this::filterEntryToDefaultModelCriteria)
                         .filter(Objects::nonNull)
-                        .toArray(ModelCriteriaBuilder[]::new)
+                        .toArray(DefaultModelCriteria[]::new)
         );
 
         if (!attributes.containsKey(Policy.FilterOption.OWNER) && !attributes.containsKey(Policy.FilterOption.ANY_OWNER)) {
             mcb = mcb.compare(SearchableFields.OWNER, Operator.NOT_EXISTS);
         }
 
-        return tx.read(withCriteria(mcb).pagination(firstResult, maxResult, SearchableFields.NAME))
+        return tx.read(withCriteria(mcb).pagination(firstResult, maxResults, SearchableFields.NAME))
             .map(MapPolicyEntity::getId)
             // We need to go through cache
-            .map(id -> authorizationProvider.getStoreFactory().getPolicyStore().findById(id, resourceServerId))
+            .map(id -> authorizationProvider.getStoreFactory().getPolicyStore().findById(resourceServer, id))
             .collect(Collectors.toList());
     }
 
-    private ModelCriteriaBuilder<Policy> filterEntryToModelCriteriaBuilder(Map.Entry<Policy.FilterOption, String[]> entry) {
+    private DefaultModelCriteria<Policy> filterEntryToDefaultModelCriteria(Map.Entry<Policy.FilterOption, String[]> entry) {
         Policy.FilterOption name = entry.getKey();
         String[] value = entry.getValue();
 
+        DefaultModelCriteria<Policy> mcb = criteria();
         switch (name) {
             case ID:
             case SCOPE_ID:
             case RESOURCE_ID:
             case OWNER:
-                return policyStore.createCriteriaBuilder()
-                        .compare(name.getSearchableModelField(), Operator.IN, Arrays.asList(value));
+                return mcb.compare(name.getSearchableModelField(), Operator.IN, Arrays.asList(value));
             case PERMISSION: {
-                ModelCriteriaBuilder<Policy> mcb = policyStore.createCriteriaBuilder()
-                        .compare(SearchableFields.TYPE, Operator.IN, Arrays.asList("resource", "scope", "uma"));
+                mcb = mcb.compare(SearchableFields.TYPE, Operator.IN, Arrays.asList("resource", "scope", "uma"));
                 
                 if (!Boolean.parseBoolean(value[0])) {
-                    mcb = policyStore.createCriteriaBuilder().not(mcb); // TODO: create NOT_IN operator
+                    mcb = DefaultModelCriteria.<Policy>criteria().not(mcb); // TODO: create NOT_IN operator
                 }
                 
                 return mcb;
@@ -183,11 +193,10 @@ public class MapPolicyStore implements PolicyStore {
                 }
                 
                 value[1] = "%" + value[1] + "%";
-                return policyStore.createCriteriaBuilder()
-                        .compare(SearchableFields.CONFIG, Operator.LIKE, (Object[]) value);
+                return mcb.compare(SearchableFields.CONFIG, Operator.LIKE, (Object[]) value);
             case TYPE:
             case NAME:
-                return policyStore.createCriteriaBuilder().compare(name.getSearchableModelField(), Operator.ILIKE, "%" + value[0] + "%");
+                return mcb.compare(name.getSearchableModelField(), Operator.ILIKE, "%" + value[0] + "%");
             default:
                 throw new IllegalArgumentException("Unsupported filter [" + name + "]");
 
@@ -195,61 +204,76 @@ public class MapPolicyStore implements PolicyStore {
     }
 
     @Override
-    public void findByResource(String resourceId, String resourceServerId, Consumer<Policy> consumer) {
-        LOG.tracef("findByResource(%s, %s, %s)%s", resourceId, resourceServerId, consumer, getShortStackTrace());
+    public void findByResource(ResourceServer resourceServer, Resource resource, Consumer<Policy> consumer) {
+        LOG.tracef("findByResource(%s, %s, %s)%s", resourceServer, resource, consumer, getShortStackTrace());
 
-        tx.read(withCriteria(forResourceServer(resourceServerId)
-                .compare(SearchableFields.RESOURCE_ID, Operator.EQ, resourceId)))
-                .map(this::entityToAdapter)
+        tx.read(withCriteria(forResourceServer(resourceServer)
+                .compare(SearchableFields.RESOURCE_ID, Operator.EQ, resource.getId())))
+                .map(entityToAdapterFunc(resourceServer))
                 .forEach(consumer);
     }
 
     @Override
-    public void findByResourceType(String type, String resourceServerId, Consumer<Policy> policyConsumer) {
-        tx.read(withCriteria(forResourceServer(resourceServerId)
+    public void findByResourceType(ResourceServer resourceServer, String type, Consumer<Policy> policyConsumer) {
+        tx.read(withCriteria(forResourceServer(resourceServer)
                 .compare(SearchableFields.CONFIG, Operator.LIKE, (Object[]) new String[]{"defaultResourceType", type})))
-                .map(this::entityToAdapter)
+                .map(entityToAdapterFunc(resourceServer))
                 .forEach(policyConsumer);
     }
 
     @Override
-    public List<Policy> findByScopeIds(List<String> scopeIds, String resourceServerId) {
-        return tx.read(withCriteria(forResourceServer(resourceServerId)
-                .compare(SearchableFields.SCOPE_ID, Operator.IN, scopeIds)))
-                .map(this::entityToAdapter)
+    public List<Policy> findByScopes(ResourceServer resourceServer, List<Scope> scopes) {
+        return tx.read(withCriteria(forResourceServer(resourceServer)
+                .compare(SearchableFields.SCOPE_ID, Operator.IN, scopes.stream().map(Scope::getId))))
+                .map(entityToAdapterFunc(resourceServer))
                 .collect(Collectors.toList());
     }
 
     @Override
-    public void findByScopeIds(List<String> scopeIds, String resourceId, String resourceServerId, Consumer<Policy> consumer) {
-        ModelCriteriaBuilder<Policy> mcb = forResourceServer(resourceServerId)
+    public void findByScopes(ResourceServer resourceServer, Resource resource, List<Scope> scopes, Consumer<Policy> consumer) {
+        DefaultModelCriteria<Policy> mcb = forResourceServer(resourceServer)
                 .compare(SearchableFields.TYPE, Operator.EQ, "scope")
-                .compare(SearchableFields.SCOPE_ID, Operator.IN, scopeIds);
+                .compare(SearchableFields.SCOPE_ID, Operator.IN, scopes.stream().map(Scope::getId));
 
-        if (resourceId != null) {
-            mcb = mcb.compare(SearchableFields.RESOURCE_ID, Operator.EQ, resourceId);
+        if (resource != null) {
+            mcb = mcb.compare(SearchableFields.RESOURCE_ID, Operator.EQ, resource.getId());
             //                @NamedQuery(name="findPolicyIdByNullResourceScope", query="PolicyEntity pe left join fetch pe.config c inner join pe.scopes s  where pe.resourceServer.id = :serverId and pe.type = 'scope' and pe.resources is empty and s.id in (:scopeIds) and not exists (select pec from pe.config pec where KEY(pec) = 'defaultResourceType')"),
         } else {
             mcb = mcb.compare(SearchableFields.RESOURCE_ID, Operator.NOT_EXISTS)
                     .compare(SearchableFields.CONFIG, Operator.NOT_EXISTS, (Object[]) new String[] {"defaultResourceType"});
         }
 
-        tx.read(withCriteria(mcb)).map(this::entityToAdapter).forEach(consumer);
+        tx.read(withCriteria(mcb)).map(entityToAdapterFunc(resourceServer)).forEach(consumer);
     }
 
     @Override
-    public List<Policy> findByType(String type, String resourceServerId) {
-        return tx.read(withCriteria(forResourceServer(resourceServerId)
+    public List<Policy> findByType(ResourceServer resourceServer, String type) {
+        return tx.read(withCriteria(forResourceServer(resourceServer)
                 .compare(SearchableFields.TYPE, Operator.EQ, type)))
-                .map(this::entityToAdapter)
+                .map(entityToAdapterFunc(resourceServer))
                 .collect(Collectors.toList());
     }
 
     @Override
-    public List<Policy> findDependentPolicies(String id, String resourceServerId) {
-        return tx.read(withCriteria(forResourceServer(resourceServerId)
+    public List<Policy> findDependentPolicies(ResourceServer resourceServer, String id) {
+        return tx.read(withCriteria(forResourceServer(resourceServer)
                 .compare(SearchableFields.ASSOCIATED_POLICY_ID, Operator.EQ, id)))
-                    .map(this::entityToAdapter)
+                    .map(entityToAdapterFunc(resourceServer))
                     .collect(Collectors.toList());
+    }
+
+    public void preRemove(RealmModel realm) {
+        LOG.tracef("preRemove(%s)%s", realm, getShortStackTrace());
+
+        DefaultModelCriteria<Policy> mcb = criteria();
+        mcb = mcb.compare(SearchableFields.REALM_ID, Operator.EQ, realm.getId());
+
+        tx.delete(withCriteria(mcb));
+    }
+
+    public void preRemove(ResourceServer resourceServer) {
+        LOG.tracef("preRemove(%s)%s", resourceServer, getShortStackTrace());
+
+        tx.delete(withCriteria(forResourceServer(resourceServer)));
     }
 }

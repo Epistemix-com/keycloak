@@ -19,20 +19,26 @@ package org.keycloak.models.map.authorization;
 
 import org.jboss.logging.Logger;
 import org.keycloak.authorization.AuthorizationProvider;
+import org.keycloak.authorization.UserManagedPermissionUtil;
 import org.keycloak.authorization.model.PermissionTicket;
 import org.keycloak.authorization.model.PermissionTicket.SearchableFields;
 import org.keycloak.authorization.model.Resource;
 import org.keycloak.authorization.model.ResourceServer;
+import org.keycloak.authorization.model.Scope;
 import org.keycloak.authorization.store.PermissionTicketStore;
+import org.keycloak.authorization.store.ResourceServerStore;
 import org.keycloak.authorization.store.ResourceStore;
+import org.keycloak.common.util.Time;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.ModelDuplicateException;
+import org.keycloak.models.RealmModel;
 import org.keycloak.models.map.authorization.adapter.MapPermissionTicketAdapter;
 import org.keycloak.models.map.authorization.entity.MapPermissionTicketEntity;
+import org.keycloak.models.map.authorization.entity.MapPermissionTicketEntityImpl;
 import org.keycloak.models.map.storage.MapKeycloakTransaction;
 import org.keycloak.models.map.storage.MapStorage;
-import org.keycloak.models.map.storage.ModelCriteriaBuilder;
 import org.keycloak.models.map.storage.ModelCriteriaBuilder.Operator;
+import org.keycloak.models.map.storage.criteria.DefaultModelCriteria;
 
 import java.util.Collections;
 import java.util.EnumMap;
@@ -45,6 +51,7 @@ import java.util.stream.Collectors;
 import static org.keycloak.common.util.StackUtil.getShortStackTrace;
 import static org.keycloak.models.map.storage.QueryParameters.Order.ASCENDING;
 import static org.keycloak.models.map.storage.QueryParameters.withCriteria;
+import static org.keycloak.models.map.storage.criteria.DefaultModelCriteria.criteria;
 import static org.keycloak.utils.StreamsUtil.distinctByKey;
 import static org.keycloak.utils.StreamsUtil.paginatedStream;
 
@@ -53,138 +60,147 @@ public class MapPermissionTicketStore implements PermissionTicketStore {
     private static final Logger LOG = Logger.getLogger(MapPermissionTicketStore.class);
     private final AuthorizationProvider authorizationProvider;
     final MapKeycloakTransaction<MapPermissionTicketEntity, PermissionTicket> tx;
-    private final MapStorage<MapPermissionTicketEntity, PermissionTicket> permissionTicketStore;
+    private final KeycloakSession session;
 
     public MapPermissionTicketStore(KeycloakSession session, MapStorage<MapPermissionTicketEntity, PermissionTicket> permissionTicketStore, AuthorizationProvider provider) {
         this.authorizationProvider = provider;
-        this.permissionTicketStore = permissionTicketStore;
         this.tx = permissionTicketStore.createTransaction(session);
         session.getTransactionManager().enlist(tx);
+        this.session = session;
     }
 
-    private PermissionTicket entityToAdapter(MapPermissionTicketEntity origEntity) {
-        if (origEntity == null) return null;
-        // Clone entity before returning back, to avoid giving away a reference to the live object to the caller
-        return new MapPermissionTicketAdapter(origEntity, authorizationProvider.getStoreFactory());
+    private Function<MapPermissionTicketEntity, PermissionTicket> entityToAdapterFunc(ResourceServer resourceServer) {
+        return origEntity -> new MapPermissionTicketAdapter(resourceServer == null ? findResourceServer(origEntity) : resourceServer, origEntity, authorizationProvider.getStoreFactory());
     }
 
-    private ModelCriteriaBuilder<PermissionTicket> forResourceServer(String resourceServerId) {
-        ModelCriteriaBuilder<PermissionTicket> mcb = permissionTicketStore.createCriteriaBuilder();
+    private ResourceServer findResourceServer(MapPermissionTicketEntity entity) {
+        RealmModel realm = session.realms().getRealm(entity.getRealmId());
+        return authorizationProvider.getStoreFactory().getResourceServerStore().findById(realm, entity.getResourceServerId());
+    }
 
-        return resourceServerId == null
+    private DefaultModelCriteria<PermissionTicket> forResourceServer(ResourceServer resourceServer) {
+        DefaultModelCriteria<PermissionTicket> mcb = criteria();
+
+        return resourceServer == null
                 ? mcb
                 : mcb.compare(SearchableFields.RESOURCE_SERVER_ID, Operator.EQ,
-                resourceServerId);
+                resourceServer.getId());
     }
     
     @Override
-    public long count(Map<PermissionTicket.FilterOption, String> attributes, String resourceServerId) {
-        ModelCriteriaBuilder<PermissionTicket> mcb = forResourceServer(resourceServerId).and(
+    public long count(ResourceServer resourceServer, Map<PermissionTicket.FilterOption, String> attributes) {
+        DefaultModelCriteria<PermissionTicket> mcb = forResourceServer(resourceServer).and(
                 attributes.entrySet().stream()
-                        .map(this::filterEntryToModelCriteriaBuilder)
-                        .toArray(ModelCriteriaBuilder[]::new)
+                        .map(this::filterEntryToDefaultModelCriteria)
+                        .toArray(DefaultModelCriteria[]::new)
         );
 
         return tx.getCount(withCriteria(mcb));
     }
 
     @Override
-    public PermissionTicket create(String resourceId, String scopeId, String requester, ResourceServer resourceServer) {
-        LOG.tracef("create(%s, %s, %s, %s)%s", resourceId, scopeId, requester, resourceServer, getShortStackTrace());
+    public PermissionTicket create(ResourceServer resourceServer, Resource resource, Scope scope, String requester) {
+        LOG.tracef("create(%s, %s, %s, %s)%s", resource, scope, requester, resourceServer, getShortStackTrace());
 
-        String owner = authorizationProvider.getStoreFactory().getResourceStore().findById(resourceId, resourceServer.getId()).getOwner();
+        String owner = authorizationProvider.getStoreFactory().getResourceStore().findById(resourceServer, resource.getId()).getOwner();
 
         // @UniqueConstraint(columnNames = {"OWNER", "REQUESTER", "RESOURCE_SERVER_ID", "RESOURCE_ID", "SCOPE_ID"})
-        ModelCriteriaBuilder<PermissionTicket> mcb = forResourceServer(resourceServer.getId())
+        DefaultModelCriteria<PermissionTicket> mcb = forResourceServer(resourceServer)
                 .compare(SearchableFields.OWNER, Operator.EQ, owner)
-                .compare(SearchableFields.RESOURCE_ID, Operator.EQ, resourceId)
+                .compare(SearchableFields.RESOURCE_ID, Operator.EQ, resource.getId())
                 .compare(SearchableFields.REQUESTER, Operator.EQ, requester);
 
-        if (scopeId != null) {
-            mcb = mcb.compare(SearchableFields.SCOPE_ID, Operator.EQ, scopeId);
+        if (scope != null) {
+            mcb = mcb.compare(SearchableFields.SCOPE_ID, Operator.EQ, scope.getId());
         }
 
         if (tx.getCount(withCriteria(mcb)) > 0) {
             throw new ModelDuplicateException("Permission ticket for resource server: '" + resourceServer.getId()
-                    + ", Resource: " + resourceId + ", owner: " + owner + ", scopeId: " + scopeId + " already exists.");
+                    + ", Resource: " + resource + ", owner: " + owner + ", scopeId: " + scope + " already exists.");
         }
 
-        MapPermissionTicketEntity entity = new MapPermissionTicketEntity(null);
-        entity.setResourceId(resourceId);
+        MapPermissionTicketEntity entity = new MapPermissionTicketEntityImpl();
+        entity.setResourceId(resource.getId());
         entity.setRequester(requester);
-        entity.setCreatedTimestamp(System.currentTimeMillis());
+        entity.setCreatedTimestamp(Time.currentTimeMillis());
 
-        if (scopeId != null) {
-            entity.setScopeId(scopeId);
+        if (scope != null) {
+            entity.setScopeId(scope.getId());
         }
 
         entity.setOwner(owner);
         entity.setResourceServerId(resourceServer.getId());
+        entity.setRealmId(resourceServer.getRealm().getId());
 
         entity = tx.create(entity);
 
-        return entityToAdapter(entity);
+        return entity == null ? null : entityToAdapterFunc(resourceServer).apply(entity);
     }
 
     @Override
     public void delete(String id) {
         LOG.tracef("delete(%s)%s", id, getShortStackTrace());
+
+        PermissionTicket permissionTicket = findById((ResourceServer) null, id);
+        if (permissionTicket == null) return;
+
         tx.delete(id);
+        UserManagedPermissionUtil.removePolicy(permissionTicket, authorizationProvider.getStoreFactory());
     }
 
     @Override
-    public PermissionTicket findById(String id, String resourceServerId) {
-        LOG.tracef("findById(%s, %s)%s", id, resourceServerId, getShortStackTrace());
+    public PermissionTicket findById(ResourceServer resourceServer, String id) {
+        LOG.tracef("findById(%s, %s)%s", id, resourceServer, getShortStackTrace());
 
-        return tx.read(withCriteria(forResourceServer(resourceServerId)
+        return tx.read(withCriteria(forResourceServer(resourceServer)
                 .compare(SearchableFields.ID, Operator.EQ, id)))
                 .findFirst()
-                .map(this::entityToAdapter)
+                .map(entityToAdapterFunc(resourceServer))
                 .orElse(null);
     }
 
     @Override
-    public List<PermissionTicket> findByResourceServer(String resourceServerId) {
-        LOG.tracef("findByResourceServer(%s)%s", resourceServerId, getShortStackTrace());
+    public List<PermissionTicket> findByResourceServer(ResourceServer resourceServer) {
+        LOG.tracef("findByResourceServer(%s)%s", resourceServer, getShortStackTrace());
 
-        return tx.read(withCriteria(forResourceServer(resourceServerId)))
-                .map(this::entityToAdapter)
+        return tx.read(withCriteria(forResourceServer(resourceServer)))
+                .map(entityToAdapterFunc(resourceServer))
                 .collect(Collectors.toList());
     }
 
     @Override
-    public List<PermissionTicket> findByOwner(String owner, String resourceServerId) {
-        LOG.tracef("findByOwner(%s, %s)%s", owner, resourceServerId, getShortStackTrace());
+    public List<PermissionTicket> findByOwner(ResourceServer resourceServer, String owner) {
+        LOG.tracef("findByOwner(%s, %s)%s", owner, resourceServer, getShortStackTrace());
 
-        return tx.read(withCriteria(forResourceServer(resourceServerId)
+        return tx.read(withCriteria(forResourceServer(resourceServer)
                 .compare(SearchableFields.OWNER, Operator.EQ, owner)))
-                .map(this::entityToAdapter)
+                .map(entityToAdapterFunc(resourceServer))
                 .collect(Collectors.toList());
     }
 
     @Override
-    public List<PermissionTicket> findByResource(String resourceId, String resourceServerId) {
-        LOG.tracef("findByResource(%s, %s)%s", resourceId, resourceServerId, getShortStackTrace());
+    public List<PermissionTicket> findByResource(ResourceServer resourceServer, Resource resource) {
+        LOG.tracef("findByResource(%s, %s)%s", resource, resourceServer, getShortStackTrace());
 
-        return tx.read(withCriteria(forResourceServer(resourceServerId)
-                .compare(SearchableFields.RESOURCE_ID, Operator.EQ, resourceId)))
-                .map(this::entityToAdapter)
+        return tx.read(withCriteria(forResourceServer(resourceServer)
+                .compare(SearchableFields.RESOURCE_ID, Operator.EQ, resource.getId())))
+                .map(entityToAdapterFunc(resourceServer))
                 .collect(Collectors.toList());
     }
 
     @Override
-    public List<PermissionTicket> findByScope(String scopeId, String resourceServerId) {
-        LOG.tracef("findByScope(%s, %s)%s", scopeId, resourceServerId, getShortStackTrace());
+    public List<PermissionTicket> findByScope(ResourceServer resourceServer, Scope scope) {
+        LOG.tracef("findByScope(%s, %s)%s", scope, resourceServer, getShortStackTrace());
 
-        return tx.read(withCriteria(forResourceServer(resourceServerId)
-                .compare(SearchableFields.SCOPE_ID, Operator.EQ, scopeId)))
-                .map(this::entityToAdapter)
+        return tx.read(withCriteria(forResourceServer(resourceServer)
+                .compare(SearchableFields.SCOPE_ID, Operator.EQ, scope.getId())))
+                .map(entityToAdapterFunc(resourceServer))
                 .collect(Collectors.toList());
     }
 
     @Override
-    public List<PermissionTicket> find(Map<PermissionTicket.FilterOption, String> attributes, String resourceServerId, int firstResult, int maxResult) {
-        ModelCriteriaBuilder<PermissionTicket> mcb = forResourceServer(resourceServerId);
+    public List<PermissionTicket> find(ResourceServer resourceServer, Map<PermissionTicket.FilterOption, String> attributes, Integer firstResult, Integer maxResult) {
+        DefaultModelCriteria<PermissionTicket> mcb = forResourceServer(resourceServer);
 
         if (attributes.containsKey(PermissionTicket.FilterOption.RESOURCE_NAME)) {
             String expectedResourceName = attributes.remove(PermissionTicket.FilterOption.RESOURCE_NAME);
@@ -193,7 +209,7 @@ public class MapPermissionTicketStore implements PermissionTicketStore {
 
             filterOptionStringMap.put(Resource.FilterOption.EXACT_NAME, new String[]{expectedResourceName});
             
-            List<Resource> r = authorizationProvider.getStoreFactory().getResourceStore().findByResourceServer(filterOptionStringMap, resourceServerId, -1, -1);
+            List<Resource> r = authorizationProvider.getStoreFactory().getResourceStore().findByResourceServer(resourceServer, filterOptionStringMap, null, null);
             if (r == null || r.isEmpty()) {
                 return Collections.emptyList();
             }
@@ -202,19 +218,20 @@ public class MapPermissionTicketStore implements PermissionTicketStore {
         
         mcb = mcb.and(
                 attributes.entrySet().stream()
-                    .map(this::filterEntryToModelCriteriaBuilder)
-                    .toArray(ModelCriteriaBuilder[]::new)
+                    .map(this::filterEntryToDefaultModelCriteria)
+                    .toArray(DefaultModelCriteria[]::new)
         );
 
         return tx.read(withCriteria(mcb).pagination(firstResult, maxResult, SearchableFields.ID))
-                .map(this::entityToAdapter)
+                .map(entityToAdapterFunc(resourceServer))
                 .collect(Collectors.toList());
     }
     
-    private ModelCriteriaBuilder<PermissionTicket> filterEntryToModelCriteriaBuilder(Map.Entry<PermissionTicket.FilterOption, String> entry) {
+    private DefaultModelCriteria<PermissionTicket> filterEntryToDefaultModelCriteria(Map.Entry<PermissionTicket.FilterOption, String> entry) {
         PermissionTicket.FilterOption name = entry.getKey();
         String value = entry.getValue();
 
+        DefaultModelCriteria<PermissionTicket> mcb = criteria();
         switch (name) {
             case ID:
             case SCOPE_ID:
@@ -222,8 +239,7 @@ public class MapPermissionTicketStore implements PermissionTicketStore {
             case OWNER:
             case REQUESTER:
             case POLICY_ID:
-                return permissionTicketStore.createCriteriaBuilder()
-                        .compare(name.getSearchableModelField(), Operator.EQ, value);
+                return mcb.compare(name.getSearchableModelField(), Operator.EQ, value);
             case SCOPE_IS_NULL:
             case GRANTED:
             case REQUESTER_IS_NULL: {
@@ -231,12 +247,10 @@ public class MapPermissionTicketStore implements PermissionTicketStore {
                 if (Boolean.parseBoolean(value)) {
                     op = Operator.EXISTS;
                 }
-                return permissionTicketStore.createCriteriaBuilder()
-                        .compare(name.getSearchableModelField(), op);
+                return mcb.compare(name.getSearchableModelField(), op);
             }
             case POLICY_IS_NOT_NULL:
-                return permissionTicketStore.createCriteriaBuilder()
-                        .compare(SearchableFields.REQUESTER, Operator.NOT_EXISTS);
+                return mcb.compare(SearchableFields.REQUESTER, Operator.NOT_EXISTS);
             default:
                 throw new IllegalArgumentException("Unsupported filter [" + name + "]");
 
@@ -244,35 +258,37 @@ public class MapPermissionTicketStore implements PermissionTicketStore {
     }
 
     @Override
-    public List<PermissionTicket> findGranted(String userId, String resourceServerId) {
+    public List<PermissionTicket> findGranted(ResourceServer resourceServer, String userId) {
         Map<PermissionTicket.FilterOption, String> filters = new EnumMap<>(PermissionTicket.FilterOption.class);
 
         filters.put(PermissionTicket.FilterOption.GRANTED, Boolean.TRUE.toString());
         filters.put(PermissionTicket.FilterOption.REQUESTER, userId);
 
-        return find(filters, resourceServerId, -1, -1);
+        return find(resourceServer, filters, null, null);
     }
 
     @Override
-    public List<PermissionTicket> findGranted(String resourceName, String userId, String resourceServerId) {
+    public List<PermissionTicket> findGranted(ResourceServer resourceServer, String resourceName, String userId) {
         Map<PermissionTicket.FilterOption, String> filters = new EnumMap<>(PermissionTicket.FilterOption.class);
 
         filters.put(PermissionTicket.FilterOption.RESOURCE_NAME, resourceName);
         filters.put(PermissionTicket.FilterOption.GRANTED, Boolean.TRUE.toString());
         filters.put(PermissionTicket.FilterOption.REQUESTER, userId);
 
-        return find(filters, resourceServerId, -1, -1);
+        return find(resourceServer, filters, null, null);
     }
 
     @Override
-    public List<Resource> findGrantedResources(String requester, String name, int first, int max) {
-        ModelCriteriaBuilder<PermissionTicket> mcb = permissionTicketStore.createCriteriaBuilder()
-                .compare(SearchableFields.REQUESTER, Operator.EQ, requester)
-                .compare(SearchableFields.GRANTED_TIMESTAMP, Operator.EXISTS);
+    public List<Resource> findGrantedResources(RealmModel realm, String requester, String name, Integer first, Integer max) {
+        DefaultModelCriteria<PermissionTicket> mcb = criteria();
+        mcb = mcb.compare(SearchableFields.REQUESTER, Operator.EQ, requester)
+                .compare(SearchableFields.GRANTED_TIMESTAMP, Operator.EXISTS)
+                .compare(SearchableFields.REALM_ID, Operator.EQ, realm.getId());
 
         Function<MapPermissionTicketEntity, Resource> ticketResourceMapper;
 
         ResourceStore resourceStore = authorizationProvider.getStoreFactory().getResourceStore();
+        ResourceServerStore resourceServerStore = authorizationProvider.getStoreFactory().getResourceServerStore();
         if (name != null) {
             ticketResourceMapper = ticket -> {
                 Map<Resource.FilterOption, String[]> filterOptionMap = new EnumMap<>(Resource.FilterOption.class);
@@ -280,13 +296,13 @@ public class MapPermissionTicketStore implements PermissionTicketStore {
                 filterOptionMap.put(Resource.FilterOption.ID, new String[] {ticket.getResourceId()});
                 filterOptionMap.put(Resource.FilterOption.NAME, new String[] {name});
 
-                List<Resource> resource = resourceStore.findByResourceServer(filterOptionMap, ticket.getResourceServerId(), -1, 1);
+                List<Resource> resource = resourceStore.findByResourceServer(resourceServerStore.findById(realm, ticket.getResourceServerId()), filterOptionMap, -1, 1);
                 
                 return resource.isEmpty() ? null : resource.get(0);
             };
         } else {
             ticketResourceMapper = ticket -> resourceStore
-                    .findById(ticket.getResourceId(), ticket.getResourceServerId());
+                    .findById(resourceServerStore.findById(realm, ticket.getResourceServerId()), ticket.getResourceId());
         }
 
         return paginatedStream(tx.read(withCriteria(mcb).orderBy(SearchableFields.RESOURCE_ID, ASCENDING))
@@ -297,14 +313,32 @@ public class MapPermissionTicketStore implements PermissionTicketStore {
     }
 
     @Override
-    public List<Resource> findGrantedOwnerResources(String owner, int first, int max) {
-        ModelCriteriaBuilder<PermissionTicket> mcb = permissionTicketStore.createCriteriaBuilder()
-                .compare(SearchableFields.OWNER, Operator.EQ, owner);
+    public List<Resource> findGrantedOwnerResources(RealmModel realm, String owner, Integer firstResult, Integer maxResults) {
+        DefaultModelCriteria<PermissionTicket> mcb = criteria();
+        mcb = mcb.compare(SearchableFields.OWNER, Operator.EQ, owner)
+                .compare(SearchableFields.REALM_ID, Operator.EQ, realm.getId());
+
+        ResourceStore resourceStore = authorizationProvider.getStoreFactory().getResourceStore();
+        ResourceServerStore resourceServerStore = authorizationProvider.getStoreFactory().getResourceServerStore();
 
         return paginatedStream(tx.read(withCriteria(mcb).orderBy(SearchableFields.RESOURCE_ID, ASCENDING))
-            .filter(distinctByKey(MapPermissionTicketEntity::getResourceId)), first, max)
-            .map(ticket -> authorizationProvider.getStoreFactory().getResourceStore()
-                    .findById(ticket.getResourceId(), ticket.getResourceServerId()))
+            .filter(distinctByKey(MapPermissionTicketEntity::getResourceId)), firstResult, maxResults)
+            .map(ticket -> resourceStore.findById(resourceServerStore.findById(realm, ticket.getResourceServerId()), ticket.getResourceId()))
             .collect(Collectors.toList());
+    }
+
+    public void preRemove(RealmModel realm) {
+        LOG.tracef("preRemove(%s)%s", realm, getShortStackTrace());
+
+        DefaultModelCriteria<PermissionTicket> mcb = criteria();
+        mcb = mcb.compare(SearchableFields.REALM_ID, Operator.EQ, realm.getId());
+
+        tx.delete(withCriteria(mcb));
+    }
+
+    public void preRemove(ResourceServer resourceServer) {
+        LOG.tracef("preRemove(%s)%s", resourceServer, getShortStackTrace());
+
+        tx.delete(withCriteria(forResourceServer(resourceServer)));
     }
 }

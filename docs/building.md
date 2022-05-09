@@ -51,6 +51,10 @@ Classes from `org.keycloak.testsuite.*` packages aren't suitable to be used in p
 
 ---
 
+### Building Quarkus Distribution
+
+Please, take a look at this [documentation](../quarkus/README.md).
+
 ## Starting Keycloak
 
 To start Keycloak during development first build as specified above, then run:
@@ -71,7 +75,7 @@ To stop the server press `Ctrl + C`.
 ## Working with the codebase
 
 We don't currently enforce a code style in Keycloak, but a good reference is the code style used by WildFly. This can be 
-retrieved from [Wildfly ide-configs](https://github.com/wildfly/wildfly-core/tree/master/ide-configs).To import formatting 
+retrieved from [Wildfly ide-configs](https://github.com/wildfly/wildfly-core/tree/main/ide-configs).To import formatting 
 rules, see following [instructions](http://community.jboss.org/wiki/ImportFormattingRules).
 
 If your changes require updates to the database read [Updating Database Schema](updating-database-schema.md).
