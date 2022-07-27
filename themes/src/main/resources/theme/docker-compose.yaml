@@ -18,6 +18,7 @@ services:
       - "80:8080"
     volumes:
       - ./epistemix-events:/opt/bitnami/keycloak/themes/epistemix-events
+      - ./epistemix-explorer:/opt/bitnami/keycloak/themes/epistemix-explorer
 
 volumes:
   postgresql_data:
